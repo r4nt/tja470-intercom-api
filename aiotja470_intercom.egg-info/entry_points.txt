@@ -1,0 +1,2 @@
+[console_scripts]
+tja470 = aiotja470_intercom.cli:main

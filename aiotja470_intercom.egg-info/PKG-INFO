@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: aiotja470_intercom
+Version: 0.1.0
+Summary: Asynchronous Python client for the Hager TJA470 Intercom API
+Author-email: Example Author <author@example.com>
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Framework :: AsyncIO
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: aiohttp>=3.8.0
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "test"
+
 # aiotja470_intercom
 
 Asynchronous Python client for the Hager TJA470 Intercom API. This package is designed to be integrated into Home Assistant.

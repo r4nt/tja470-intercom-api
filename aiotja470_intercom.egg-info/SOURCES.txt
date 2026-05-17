@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+aiotja470_intercom/__init__.py
+aiotja470_intercom/cli.py
+aiotja470_intercom/client.py
+aiotja470_intercom/exceptions.py
+aiotja470_intercom/models.py
+aiotja470_intercom/runner.py
+aiotja470_intercom.egg-info/PKG-INFO
+aiotja470_intercom.egg-info/SOURCES.txt
+aiotja470_intercom.egg-info/dependency_links.txt
+aiotja470_intercom.egg-info/entry_points.txt
+aiotja470_intercom.egg-info/requires.txt
+aiotja470_intercom.egg-info/top_level.txt
+tests/test_client.py

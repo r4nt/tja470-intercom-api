@@ -76,11 +76,14 @@ class AiohttpRunner(Runner):
                 
                 content_type = response.headers.get("Content-Type", "")
                 if "application/json" in content_type:
-                    return await response.json()
+                    data = await response.json()
                 elif "text/" in content_type:
-                    return await response.text()
+                    data = await response.text()
                 else:
-                    return await response.read()
+                    data = await response.read()
+
+                _LOGGER.debug(f"Response Content: {data}")
+                return data
 
         except aiohttp.ClientConnectorError as e:
             raise TJA470ConnectionError(f"Connection failed: {e}") from e

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import uuid
@@ -30,6 +31,7 @@ class CustomParser(argparse.ArgumentParser):
 
 async def async_main():
     parser = CustomParser(description="TJA-470 Intercom CLI")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging (prints raw HTTP requests and responses)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # `pair` command
@@ -49,6 +51,9 @@ async def async_main():
     run_parser.add_argument("--provisioning", action="store_true", help="Print the provisioning info")
 
     args = parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
 
     if args.command == "pair":
         await run_pair(args)

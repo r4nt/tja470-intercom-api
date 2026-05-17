@@ -2,7 +2,7 @@ import aiohttp
 import logging
 from typing import Any, Dict, Optional, Protocol, Union
 
-from .exceptions import TJA470ConnectionError, TJA470AuthError, TJA470ResponseError
+from .exceptions import TJA470Error, TJA470ConnectionError, TJA470AuthError, TJA470ResponseError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +89,9 @@ class AiohttpRunner(Runner):
             raise TJA470ConnectionError(f"Connection failed: {e}") from e
         except aiohttp.ClientResponseError as e:
             raise TJA470ResponseError(f"HTTP Error {e.status}: {e.message}") from e
+        except TJA470Error:
+            # Re-raise our own exceptions so they aren't wrapped by the catch-all
+            raise
         except Exception as e:
             raise TJA470Error(f"An unexpected error occurred: {e}") from e
 

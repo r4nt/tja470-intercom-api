@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any, Dict
 
 from aiotja470_intercom.client import TJA470IntercomClient
@@ -21,8 +22,14 @@ def save_config(config: Dict[str, Any]) -> None:
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
 
+class CustomParser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write(f'error: {message}\n\n')
+        self.print_help()
+        sys.exit(2)
+
 async def async_main():
-    parser = argparse.ArgumentParser(description="TJA-470 Intercom CLI")
+    parser = CustomParser(description="TJA-470 Intercom CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # `pair` command
@@ -30,7 +37,10 @@ async def async_main():
     pair_parser.add_argument("--host", required=True, help="IP address of the TJA-470")
     pair_parser.add_argument("--username", required=True, help="Username for the TJA-470")
     pair_parser.add_argument("--password", required=True, help="Password for the TJA-470")
-    pair_parser.add_argument("--uuid", required=True, help="UUID for the client (e.g. from uuidgen)")
+    pair_parser.add_argument("--uuid", help="Optional custom UUID. If omitted, a random one is generated.")
+
+    # `status` command
+    status_parser = subparsers.add_parser("status", help="Show current connection status and device information")
 
     # `run` command
     run_parser = subparsers.add_parser("run", help="Run commands using the cached session")
@@ -42,10 +52,13 @@ async def async_main():
 
     if args.command == "pair":
         await run_pair(args)
+    elif args.command == "status":
+        await run_status(args)
     elif args.command == "run":
         await run_command(args)
 
 async def run_pair(args):
+    client_uuid = args.uuid if args.uuid else str(uuid.uuid4())
     print(f"Connecting to TJA470 at {args.host}...")
     runner = AiohttpRunner()
     client = TJA470IntercomClient(
@@ -69,8 +82,8 @@ async def run_pair(args):
             
         target_device = devices[0]
         
-        print(f"\nRegistering UUID '{args.uuid}' to device ID {target_device.id}...")
-        await client.set_uid(target_device.id, args.uuid)
+        print(f"\nRegistering UUID '{client_uuid}' to device ID {target_device.id}...")
+        await client.set_uid(target_device.id, client_uuid)
         print("UUID registered successfully!")
 
         # Save config
@@ -78,7 +91,7 @@ async def run_pair(args):
             "host": args.host,
             "username": args.username,
             "password": args.password,
-            "uuid": args.uuid,
+            "uuid": client_uuid,
             "cookies": client.get_cookies()
         }
         save_config(config)
@@ -147,6 +160,60 @@ async def run_command(args):
 
     except Exception as e:
         print(f"\n❌ An error occurred: {e}")
+    finally:
+        await runner.close()
+
+
+async def run_status(args):
+    config = load_config()
+    if not config:
+        print(f"❌ Configuration not found at {CONFIG_FILE}.")
+        print("Please run `tja470 pair` first.")
+        sys.exit(1)
+
+    print("Checking connection to TJA-470...")
+    runner = AiohttpRunner()
+    client = TJA470IntercomClient(
+        host=config["host"],
+        username=config["username"],
+        password=config["password"],
+        runner=runner
+    )
+
+    if config.get("cookies"):
+        client.set_cookies(config["cookies"])
+
+    try:
+        # Check authentication
+        await client.get_manifest()
+        
+        # Save cookies if updated
+        new_cookies = client.get_cookies()
+        if new_cookies != config.get("cookies", {}):
+            config["cookies"] = new_cookies
+            save_config(config)
+
+        print("\n✅ Authentication successful!")
+        print(f"Host: {config['host']}")
+        print(f"UUID: {config['uuid']}")
+        
+        print("\nFetching provisioning data...")
+        prov = await client.get_provisioning(config["uuid"])
+        print("\n📋 Intercom Information:")
+        print(f"  SIP ID: {prov.sip_info.sip_id}")
+        print(f"  SIP Password: {'*' * len(prov.sip_info.sip_password)}")
+        print(f"  RTSP Video URL: {prov.rtsp_video_url}")
+        
+        if prov.called_elements:
+            print("\n  Extensions (Called Elements):")
+            for ext in prov.called_elements:
+                print(f"    - Name: {ext.name or 'Unknown'} (SIP ID: {ext.sip_id})")
+        
+    except TJA470AuthError:
+        print("\n❌ Authentication failed. Your session or credentials might be invalid.")
+        print("Try running `tja470 pair` again.")
+    except Exception as e:
+        print(f"\n❌ An error occurred while fetching status: {e}")
     finally:
         await runner.close()
 

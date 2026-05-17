@@ -2,7 +2,7 @@ Metadata-Version: 2.4
 Name: aiotja470_intercom
 Version: 0.1.0
 Summary: Asynchronous Python client for the Hager TJA470 Intercom API
-Author-email: Example Author <author@example.com>
+Author-email: Manuel Klimek <klimek@box4.net>
 Classifier: Programming Language :: Python :: 3
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent

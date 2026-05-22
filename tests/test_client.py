@@ -97,9 +97,27 @@ async def test_get_provisioning(client, runner):
         "sipId": "1001",
         "sipPassword": "secretpassword",
         "rtspVideoUrl": "rtsp://127.0.0.1/stream",
+        "httpVideoUrl": "http://127.0.0.1:8021/mjpg/high",
+        "localIpAddress": "192.168.1.100",
+        "doorReleaseAllowed": True,
         "calledElements": [
             {"sipId": "1002", "name": "Station 1", "order": 0}
-        ]
+        ],
+        "remoteAccess": {
+            "sipId": "remote1001",
+            "sipPassword": "remotesecret",
+            "ngrokUrl": "https://foo.ngrok.io",
+            "rtspUrl": "rtsp://foo.ngrok.io/live",
+            "rtspPort": 554,
+            "sipTcpUrl": "tcp://foo.ngrok.io",
+            "sipTcpPort": 5060,
+            "wsPort": 8080,
+            "stunTurnPrefix": "turn:",
+            "stunTurnUser": "stunuser",
+            "stunTurnPassword": "stunpassword",
+            "stunTurnHostname": "stun.hager.com",
+            "stunTurnPort": 3478
+        }
     }
     config = await client.get_provisioning("test-uuid")
     
@@ -107,10 +125,28 @@ async def test_get_provisioning(client, runner):
     assert config.sip_info.sip_id == "1001"
     assert config.sip_info.sip_password == "secretpassword"
     assert config.rtsp_video_url == "rtsp://127.0.0.1/stream"
+    assert config.http_video_url == "http://127.0.0.1:8021/mjpg/high"
+    assert config.local_ip_address == "192.168.1.100"
+    assert config.door_release_allowed is True
     assert len(config.called_elements) == 1
     assert config.called_elements[0].sip_id == "1002"
     assert config.called_elements[0].name == "Station 1"
     assert config.called_elements[0].order == 0
+
+    assert config.remote_access is not None
+    assert config.remote_access.sip_id == "remote1001"
+    assert config.remote_access.sip_password == "remotesecret"
+    assert config.remote_access.ngrok_url == "https://foo.ngrok.io"
+    assert config.remote_access.rtsp_url == "rtsp://foo.ngrok.io/live"
+    assert config.remote_access.rtsp_port == 554
+    assert config.remote_access.sip_tcp_url == "tcp://foo.ngrok.io"
+    assert config.remote_access.sip_tcp_port == 5060
+    assert config.remote_access.ws_port == 8080
+    assert config.remote_access.stun_turn_prefix == "turn:"
+    assert config.remote_access.stun_turn_user == "stunuser"
+    assert config.remote_access.stun_turn_password == "stunpassword"
+    assert config.remote_access.stun_turn_hostname == "stun.hager.com"
+    assert config.remote_access.stun_turn_port == 3478
 
 @pytest.mark.asyncio
 async def test_get_provisioning_error(client, runner):
@@ -166,4 +202,34 @@ def test_cookies(client, runner):
     client.set_cookies({"session_id": "12345"})
     cookies = client.get_cookies()
     assert cookies == {"session_id": "12345"}
+
+def test_redact():
+    from aiotja470_intercom.runner import _redact
+    data = {
+        "sipId": "1001",
+        "sipPassword": "secretpassword",
+        "nested": {
+            "token": "sensitive_token",
+            "safe": "hello"
+        },
+        "list": [
+            {"password": "pw1"},
+            {"safe": 42}
+        ]
+    }
+    redacted = _redact(data)
+    assert redacted["sipId"] == "1001"
+    assert redacted["sipPassword"] == "********"
+    assert redacted["nested"]["token"] == "********"
+    assert redacted["nested"]["safe"] == "hello"
+    assert redacted["list"][0]["password"] == "********"
+    assert redacted["list"][1]["safe"] == 42
+    
+    import json
+    json_str = json.dumps(data)
+    redacted_str = _redact(json_str)
+    parsed = json.loads(redacted_str)
+    assert parsed["sipPassword"] == "********"
+    
+    assert _redact("just a string") == "just a string"
 

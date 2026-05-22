@@ -5,7 +5,7 @@ from .exceptions import (
     TJA470Error,
     TJA470ResponseError,
 )
-from .models import CalledElement, FreeDevice, Manifest, ProvisioningInfo, SipInfo
+from .models import CalledElement, FreeDevice, Manifest, ProvisioningInfo, SipInfo, RemoteAccessInfo
 from .runner import AiohttpRunner, Runner
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "ProvisioningInfo",
     "SipInfo",
     "CalledElement",
+    "RemoteAccessInfo",
     "Runner",
     "AiohttpRunner",
 ]

@@ -6,6 +6,27 @@ from .exceptions import TJA470Error, TJA470ConnectionError, TJA470AuthError, TJA
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _redact(data: Any) -> Any:
+    """Redact sensitive fields from data for safe logging."""
+    if isinstance(data, dict):
+        return {
+            k: "********" if any(secret_key in k.lower() for secret_key in ("password", "secret", "token", "cookie", "auth"))
+            else _redact(v)
+            for k, v in data.items()
+        }
+    elif isinstance(data, list):
+        return [_redact(item) for item in data]
+    elif isinstance(data, str):
+        import json
+        try:
+            parsed = json.loads(data)
+            return json.dumps(_redact(parsed))
+        except (ValueError, TypeError):
+            pass
+    return data
+
+
 class Runner(Protocol):
     """Protocol for executing HTTP requests."""
 
@@ -57,17 +78,21 @@ class AiohttpRunner(Runner):
         
         _LOGGER.debug(f"Request: {method} {url}")
         if json is not None:
-            _LOGGER.debug(f"Request JSON: {json}")
+            _LOGGER.debug(f"Request JSON: {_redact(json)}")
 
         from yarl import URL
         req_cookies = session.cookie_jar.filter_cookies(URL(url))
         if req_cookies:
-            _LOGGER.debug(f"Sending Cookies: {req_cookies}")
+            logged_cookies = {k: "********" for k in req_cookies.keys()}
+            _LOGGER.debug(f"Sending Cookies: {logged_cookies}")
 
         try:
             async with session.request(method, url, auth=auth, json=json) as response:
                 _LOGGER.debug(f"Response Status: {response.status}")
-                _LOGGER.debug(f"Response Headers: {response.headers}")
+                logged_headers = dict(response.headers)
+                if "Set-Cookie" in logged_headers:
+                    logged_headers["Set-Cookie"] = "********"
+                _LOGGER.debug(f"Response Headers: {logged_headers}")
 
                 if response.status == 401 or response.status == 403:
                     raise TJA470AuthError("Authentication failed")
@@ -82,7 +107,7 @@ class AiohttpRunner(Runner):
                 else:
                     data = await response.read()
 
-                _LOGGER.debug(f"Response Content: {data}")
+                _LOGGER.debug(f"Response Content: {_redact(data)}")
                 return data
 
         except aiohttp.ClientConnectorError as e:

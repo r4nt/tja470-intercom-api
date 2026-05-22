@@ -4,6 +4,8 @@ An asynchronous, stateless Python client for the Hager TJA470 Intercom API.
 
 This library was heavily designed to act as the underlying foundation for Home Assistant integrations. It relies purely on dependency injection for network requests, correctly manages raw session cookies over IP addresses, and provides an end-to-end command-line interface for local testing.
 
+> ⚠️ **Disclaimer:** This is an unofficial library. It is **not** affiliated with, endorsed by, or supported by Hager. Use it at your own risk.
+
 ## Installation
 
 ```bash
@@ -32,6 +34,10 @@ Run commands utilizing the cached session cookies without re-authenticating!
 ```bash
 # Open the door
 tja470 run --open-door
+
+# Open the door at a specific camera position index (e.g. 0)
+# (Cycles the camera feed to position 0 first, then triggers release)
+tja470 run --open-door-at 0
 
 # Switch camera
 tja470 run --switch-camera
@@ -122,6 +128,9 @@ await client.open_door(door_id=1)
 
 # 5. Switching camera feeds
 await client.switch_camera("your-uuid-string")
+
+# 6. Switching to a specific camera position and opening the door
+await client.open_door_at_position("your-uuid-string", position=0)
 ```
 
 ## Exception Handling

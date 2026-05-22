@@ -32,3 +32,8 @@ test = [
 
 [tool.setuptools.packages.find]
 include = ["aiotja470_intercom*"]
+
+[project.urls]
+Homepage = "https://github.com/r4nt/tja470-intercom-api"
+Repository = "https://github.com/r4nt/tja470-intercom-api"
+"Bug Tracker" = "https://github.com/r4nt/tja470-intercom-api/issues"

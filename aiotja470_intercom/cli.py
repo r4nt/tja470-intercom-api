@@ -47,6 +47,7 @@ async def async_main():
     # `run` command
     run_parser = subparsers.add_parser("run", help="Run commands using the cached session")
     run_parser.add_argument("--open-door", action="store_true", help="Open the door (door ID 1)")
+    run_parser.add_argument("--open-door-at", type=int, help="Open the door at a specific camera position index (0, 1, ...)")
     run_parser.add_argument("--switch-camera", action="store_true", help="Switch the camera feed")
     run_parser.add_argument("--provisioning", action="store_true", help="Print the provisioning info")
 
@@ -158,10 +159,15 @@ async def run_command(args):
             await client.open_door(door_id=1)
             print("Door opened successfully!")
 
+        if args.open_door_at is not None:
+            print(f"\n🚪 Opening the door at camera position {args.open_door_at}...")
+            await client.open_door_at_position(uuid, args.open_door_at, door_id=1)
+            print("Door opened successfully!")
+
         if args.switch_camera:
             print("\n📷 Switching the camera feed...")
-            await client.switch_camera(uuid)
-            print("Camera switched successfully!")
+            new_pos = await client.switch_camera(uuid)
+            print(f"Camera switched successfully! New position index: {new_pos}")
 
     except Exception as e:
         print(f"\n❌ An error occurred: {e}")
@@ -212,7 +218,8 @@ async def run_status(args):
         if prov.called_elements:
             print("\n  Extensions (Called Elements):")
             for ext in prov.called_elements:
-                print(f"    - Name: {ext.name or 'Unknown'} (SIP ID: {ext.sip_id})")
+                pos_str = f", Camera Position: {ext.order}" if ext.order is not None else ""
+                print(f"    - Name: {ext.name or 'Unknown'} (SIP ID: {ext.sip_id}{pos_str})")
         
     except TJA470AuthError:
         print("\n❌ Authentication failed. Your session or credentials might be invalid.")

@@ -80,10 +80,34 @@ class TJA470IntercomClient:
 
         return ProvisioningInfo.from_dict(response)
 
-    async def switch_camera(self, uid: str) -> None:
-        """Switch the camera between different intercom views."""
+    async def switch_camera(self, uid: str) -> int:
+        """Switch the camera between different intercom views and return the camera order index."""
         url = f"{self.base_url}/runtime/command/camera/switch/{uid}"
-        await self._request("POST", url, json={})
+        response = await self._request("POST", url, json={})
+        if isinstance(response, dict) and "order" in response:
+            return int(response["order"])
+        raise TJA470ResponseError("Expected a dict with 'order' from switch_camera")
+
+    async def switch_to_camera_position(self, uid: str, position: int, max_attempts: int = 10) -> int:
+        """Switch the camera repeatedly until it reaches the target position."""
+        seen_positions = set()
+        for attempt in range(max_attempts):
+            current_pos = await self.switch_camera(uid)
+            if current_pos == position:
+                return current_pos
+            if current_pos in seen_positions and len(seen_positions) > 1:
+                raise TJA470ResponseError(
+                    f"Target position {position} not found in the camera cycle (seen positions: {seen_positions})"
+                )
+            seen_positions.add(current_pos)
+        raise TJA470ResponseError(
+            f"Failed to switch to camera position {position} after {max_attempts} attempts"
+        )
+
+    async def open_door_at_position(self, uid: str, position: int, door_id: int = 1, max_attempts: int = 10) -> None:
+        """Switch camera until the target position is reached, then open the door."""
+        await self.switch_to_camera_position(uid, position, max_attempts=max_attempts)
+        await self.open_door(door_id)
 
     async def open_door(self, door_id: int = 1) -> None:
         """Trigger the door release."""

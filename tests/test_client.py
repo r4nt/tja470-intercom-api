@@ -10,6 +10,7 @@ class MockRunner:
     def __init__(self):
         self.requests = []
         self.next_response: Union[Dict[str, Any], str, list, Exception] = {}
+        self.responses_queue = []
         self.cookies = {}
         
     async def request(
@@ -20,9 +21,13 @@ class MockRunner:
         json: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str, bytes, list, None]:
         self.requests.append({"method": method, "url": url, "auth": auth, "json": json})
-        if isinstance(self.next_response, Exception):
-            raise self.next_response
-        return self.next_response
+        if self.responses_queue:
+            resp = self.responses_queue.pop(0)
+        else:
+            resp = self.next_response
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
 
     def get_cookies(self, url: str) -> Dict[str, str]:
         return self.cookies.get(url, {})
@@ -46,11 +51,12 @@ def client(runner):
 
 @pytest.mark.asyncio
 async def test_get_manifest(client, runner):
-    runner.next_response = {"status": "ok"}
+    runner.next_response = {"status": "ok", "fw": "1.2.3"}
     manifest = await client.get_manifest()
     
     assert isinstance(manifest, Manifest)
-    assert manifest.raw_data == {"status": "ok"}
+    assert manifest.raw_data == {"status": "ok", "fw": "1.2.3"}
+    assert manifest.fw == "1.2.3"
     assert len(runner.requests) == 1
     assert runner.requests[0]["method"] == "GET"
     assert "manifest" in runner.requests[0]["url"]
@@ -92,7 +98,7 @@ async def test_get_provisioning(client, runner):
         "sipPassword": "secretpassword",
         "rtspVideoUrl": "rtsp://127.0.0.1/stream",
         "calledElements": [
-            {"sipId": "1002", "name": "Station 1"}
+            {"sipId": "1002", "name": "Station 1", "order": 0}
         ]
     }
     config = await client.get_provisioning("test-uuid")
@@ -104,6 +110,7 @@ async def test_get_provisioning(client, runner):
     assert len(config.called_elements) == 1
     assert config.called_elements[0].sip_id == "1002"
     assert config.called_elements[0].name == "Station 1"
+    assert config.called_elements[0].order == 0
 
 @pytest.mark.asyncio
 async def test_get_provisioning_error(client, runner):
@@ -113,11 +120,39 @@ async def test_get_provisioning_error(client, runner):
 
 @pytest.mark.asyncio
 async def test_switch_camera(client, runner):
-    runner.next_response = ""
-    await client.switch_camera("test-uuid")
+    runner.next_response = {"order": 1}
+    pos = await client.switch_camera("test-uuid")
     
+    assert pos == 1
     assert len(runner.requests) == 1
     assert "camera/switch/test-uuid" in runner.requests[0]["url"]
+
+@pytest.mark.asyncio
+async def test_switch_to_camera_position_success(client, runner):
+    runner.responses_queue = [{"order": 0}, {"order": 1}]
+    pos = await client.switch_to_camera_position("test-uuid", 1)
+    
+    assert pos == 1
+    assert len(runner.requests) == 2
+
+@pytest.mark.asyncio
+async def test_switch_to_camera_position_not_found(client, runner):
+    runner.responses_queue = [{"order": 0}, {"order": 1}, {"order": 0}]
+    with pytest.raises(TJA470ResponseError) as exc_info:
+        await client.switch_to_camera_position("test-uuid", 2)
+    
+    assert "Target position 2 not found" in str(exc_info.value)
+    assert len(runner.requests) == 3
+
+@pytest.mark.asyncio
+async def test_open_door_at_position(client, runner):
+    runner.responses_queue = [{"order": 0}, {"order": 1}, ""]
+    await client.open_door_at_position("test-uuid", 1, door_id=1)
+    
+    assert len(runner.requests) == 3
+    assert "camera/switch/test-uuid" in runner.requests[0]["url"]
+    assert "camera/switch/test-uuid" in runner.requests[1]["url"]
+    assert "doorrelease/1" in runner.requests[2]["url"]
 
 @pytest.mark.asyncio
 async def test_open_door(client, runner):

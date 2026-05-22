@@ -6,6 +6,11 @@ class Manifest:
     """Representation of a Manifest response."""
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def fw(self) -> Optional[str]:
+        """Get the firmware version from the manifest raw data."""
+        return self.raw_data.get("fw")
+
 @dataclass
 class FreeDevice:
     """Representation of a free device."""
@@ -32,6 +37,7 @@ class CalledElement:
     """A called element, e.g. a station."""
     sip_id: str
     name: Optional[str] = None
+    order: Optional[int] = None
 
 @dataclass
 class ProvisioningInfo:
@@ -49,10 +55,12 @@ class ProvisioningInfo:
         )
         called_elements = []
         for element in data.get("calledElements", []):
+            order_val = element.get("order")
             called_elements.append(
                 CalledElement(
                     sip_id=element.get("sipId", ""),
-                    name=element.get("name")
+                    name=element.get("name"),
+                    order=int(order_val) if order_val is not None else None
                 )
             )
         return cls(

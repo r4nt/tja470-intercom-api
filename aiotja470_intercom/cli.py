@@ -310,13 +310,15 @@ def get_free_sip_port(ip: str) -> int:
             return 5061
 
 
-def run_sip_client(host: str, sip_id: str, sip_password: str, initial_call: Optional[str] = None, debug_sip: bool = False):
+async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initial_call: Optional[str] = None, debug_sip: bool = False):
     import time
     import pyVoIP
+    from aiotja470_intercom.sip import TJA470SipPhone, TJA470SipCall
+    from pyVoIP.VoIP.status import PhoneStatus
+
     if debug_sip:
         pyVoIP.DEBUG = True
         print("SIP client debug logging enabled.")
-    from pyVoIP.VoIP import VoIPPhone, CallState
 
     local_ip = get_local_ip(host)
     print(f"Detected local IP to route to intercom: {local_ip}")
@@ -326,33 +328,38 @@ def run_sip_client(host: str, sip_id: str, sip_password: str, initial_call: Opti
     print(f"SIP Server IP: {host}")
     print(f"SIP ID: {sip_id}")
 
-    active_call = None
-    call_lock = threading.Lock()
+    active_call: Optional[TJA470SipCall] = None
+    call_lock = asyncio.Lock()
 
-    def on_incoming_call(call):
+    async def on_incoming_call(call: TJA470SipCall) -> None:
         nonlocal active_call
-        with call_lock:
+        async with call_lock:
             active_call = call
-        print(f"\n📞 INCOMING CALL from {call.request.headers.get('From', {}).get('number', 'unknown')}!")
+        print(f"\n📞 INCOMING CALL from {call.caller}!")
         print("Press 'a' to answer, 'r' to reject/busy.")
         sys.stdout.write("> ")
         sys.stdout.flush()
 
-    phone = VoIPPhone(
-        server=host,
-        port=5060,
-        username=sip_id,
-        password=sip_password,
-        myIP=local_ip,
-        sipPort=sip_port,
-        callCallback=on_incoming_call
+    async def on_registration_state_changed(status: PhoneStatus) -> None:
+        print(f"\n🔄 SIP Registration State Changed: {status}")
+        sys.stdout.write("> ")
+        sys.stdout.flush()
+
+    phone = TJA470SipPhone(
+        host=host,
+        sip_id=sip_id,
+        sip_password=sip_password,
+        local_ip=local_ip,
+        sip_port=sip_port,
     )
+    phone.register_incoming_call_callback(on_incoming_call)
+    phone.register_registration_state_callback(on_registration_state_changed)
 
     print("Registering SIP client with TJA-470...")
-    phone.start()
+    await phone.start()
 
     # Wait a bit for registration status to settle
-    time.sleep(2)
+    await asyncio.sleep(2)
     print(f"SIP Registration Status: {phone.get_status()}")
 
     print("\nSIP Interactive CLI commands:")
@@ -365,13 +372,16 @@ def run_sip_client(host: str, sip_id: str, sip_password: str, initial_call: Opti
 
     if initial_call:
         print(f"\nDialing initial target {initial_call}...")
-        with call_lock:
-            active_call = phone.call(initial_call)
+        async with call_lock:
+            active_call = await phone.call(initial_call)
         print("Call initiated.")
+
+    loop = asyncio.get_running_loop()
 
     try:
         while True:
-            cmd = input("> ").strip()
+            # Non-blocking read of stdin using run_in_executor
+            cmd = await loop.run_in_executor(None, lambda: input("> ").strip())
             if not cmd:
                 continue
             if cmd == "q":
@@ -379,38 +389,38 @@ def run_sip_client(host: str, sip_id: str, sip_password: str, initial_call: Opti
             elif cmd.startswith("c "):
                 target = cmd[2:].strip()
                 print(f"Dialing {target}...")
-                with call_lock:
-                    active_call = phone.call(target)
+                async with call_lock:
+                    active_call = await phone.call(target)
                 print("Call initiated.")
             elif cmd == "a":
-                with call_lock:
+                async with call_lock:
                     if active_call:
                         print("Answering call...")
-                        active_call.answer()
+                        await active_call.answer()
                         print("Call answered.")
                     else:
                         print("No active call to answer.")
             elif cmd == "h":
-                with call_lock:
+                async with call_lock:
                     if active_call:
                         print("Hanging up...")
-                        active_call.hangup()
+                        await active_call.hangup()
                         print("Call hung up.")
                         active_call = None
                     else:
                         print("No active call to hang up.")
             elif cmd == "r":
-                with call_lock:
+                async with call_lock:
                     if active_call:
                         print("Rejecting call...")
-                        active_call.deny()
+                        await active_call.deny()
                         print("Call rejected.")
                         active_call = None
                     else:
                         print("No active call to reject.")
             elif cmd == "status":
                 print(f"SIP Registration Status: {phone.get_status()}")
-                with call_lock:
+                async with call_lock:
                     if active_call:
                         print(f"Active Call State: {active_call.state}")
                     else:
@@ -421,7 +431,7 @@ def run_sip_client(host: str, sip_id: str, sip_password: str, initial_call: Opti
         print("\nExiting...")
     finally:
         print("Stopping SIP client...")
-        phone.stop()
+        await phone.stop()
 
 
 async def run_sip(args):
@@ -475,8 +485,8 @@ async def run_sip(args):
             print("❌ Provisioning returned empty SIP ID or Password.")
             sys.exit(1)
 
-        # Run pyVoIP client in sync mode
-        run_sip_client(host, sip_id, sip_password, args.call, debug_sip=args.debug)
+        # Run pyVoIP client in async mode
+        await run_sip_client_async(host, sip_id, sip_password, args.call, debug_sip=args.debug)
 
     except Exception as e:
         print(f"\n❌ An error occurred: {e}")

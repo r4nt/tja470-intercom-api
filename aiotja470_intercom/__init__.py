@@ -7,6 +7,7 @@ from .exceptions import (
 )
 from .models import CalledElement, FreeDevice, Manifest, ProvisioningInfo, SipInfo, RemoteAccessInfo
 from .runner import AiohttpRunner, Runner
+from .sip import TJA470SipPhone, TJA470SipCall, TJA470SipError
 
 __all__ = [
     "TJA470IntercomClient",
@@ -22,4 +23,7 @@ __all__ = [
     "RemoteAccessInfo",
     "Runner",
     "AiohttpRunner",
+    "TJA470SipPhone",
+    "TJA470SipCall",
+    "TJA470SipError",
 ]

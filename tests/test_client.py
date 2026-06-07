@@ -149,6 +149,32 @@ async def test_get_provisioning(client, runner):
     assert config.remote_access.stun_turn_port == 3478
 
 @pytest.mark.asyncio
+async def test_get_provisioning_integer_fields(client, runner):
+    runner.next_response = {
+        "sipId": 6004,
+        "sipPassword": "secretpassword",
+        "rtspVideoUrl": "rtsp://127.0.0.1/stream",
+        "httpVideoUrl": "http://127.0.0.1:8021/mjpg/high",
+        "localIpAddress": "192.168.1.100",
+        "doorReleaseAllowed": True,
+        "calledElements": [
+            {"sipId": 6000, "name": "Station 1", "order": 0}
+        ],
+        "remoteAccess": {
+            "sipId": 6005,
+            "sipPassword": "remotesecret"
+        }
+    }
+    config = await client.get_provisioning("test-uuid")
+    
+    assert isinstance(config, ProvisioningInfo)
+    assert config.sip_info.sip_id == "6004"
+    assert config.called_elements[0].sip_id == "6000"
+    assert config.remote_access is not None
+    assert config.remote_access.sip_id == "6005"
+
+
+@pytest.mark.asyncio
 async def test_get_provisioning_error(client, runner):
     runner.next_response = ["not", "a", "dict"]
     with pytest.raises(TJA470ResponseError):

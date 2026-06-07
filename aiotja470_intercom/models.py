@@ -59,8 +59,8 @@ class RemoteAccessInfo:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RemoteAccessInfo":
         return cls(
-            sip_id=data.get("sipId", ""),
-            sip_password=data.get("sipPassword", ""),
+            sip_id=str(data.get("sipId", "")),
+            sip_password=str(data.get("sipPassword", "")),
             ngrok_url=data.get("ngrokUrl", ""),
             rtsp_url=data.get("rtspUrl", ""),
             rtsp_port=int(data.get("rtspPort", 0)) if data.get("rtspPort") else 0,
@@ -89,15 +89,15 @@ class ProvisioningInfo:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProvisioningInfo":
         sip_info = SipInfo(
-            sip_id=data.get("sipId", ""),
-            sip_password=data.get("sipPassword", "")
+            sip_id=str(data.get("sipId", "")),
+            sip_password=str(data.get("sipPassword", ""))
         )
         called_elements = []
         for element in data.get("calledElements", []):
             order_val = element.get("order")
             called_elements.append(
                 CalledElement(
-                    sip_id=element.get("sipId", ""),
+                    sip_id=str(element.get("sipId", "")),
                     name=element.get("name"),
                     order=int(order_val) if order_val is not None else None
                 )

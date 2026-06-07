@@ -19,6 +19,8 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.8.0",
+    "pyVoIP>=1.6.8",
+    "audioop-lts; python_version >= '3.13'",
 ]
 
 [project.scripts]

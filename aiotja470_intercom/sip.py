@@ -56,11 +56,52 @@ class TJA470SipCall:
         except Exception as e:
             raise TJA470SipError(f"Failed to deny call: {e}") from e
 
-    async def read_audio(self, length: int = 160, blocking: bool = True) -> bytes:
+    def _safe_read_audio(self, length: int, blocking: bool) -> bytes:
+        if (
+            not hasattr(self._raw_call, "RTPClients")
+            or not isinstance(self._raw_call.RTPClients, list)
+            or not self._raw_call.RTPClients
+        ):
+            return self._raw_call.read_audio(length, blocking)
+        
+        client = self._raw_call.RTPClients[0]
+        pmin = client.pmin
+        import time
+
+        if blocking:
+            while self.state == CallState.ANSWERED:
+                with pmin.bufferLock:
+                    if pmin.log:
+                        max_key = max(pmin.log.keys())
+                        max_offset = max_key - pmin.offset + len(pmin.log[max_key])
+                        if pmin.buffer.tell() < max_offset:
+                            break
+                time.sleep(0.01)
+
+        with pmin.bufferLock:
+            if not pmin.log:
+                return b"\x80" * length
+            
+            bufferloc = pmin.buffer.tell()
+            max_key = max(pmin.log.keys())
+            max_offset = max_key - pmin.offset + len(pmin.log[max_key])
+            
+            if bufferloc >= max_offset:
+                return b"\x80" * length
+            
+            readable = max_offset - bufferloc
+            to_read = min(length, readable)
+            
+            packet = pmin.buffer.read(to_read)
+            if len(packet) < length:
+                packet = packet + (b"\x80" * (length - len(packet)))
+            return packet
+
+    async def read_audio(self, length: int = 160, blocking: bool = False) -> bytes:
         """Read audio frames from the call (default 8-bit linear PCM at 8000Hz)."""
         try:
             return await self._loop.run_in_executor(
-                None, lambda: self._raw_call.read_audio(length, blocking)
+                None, lambda: self._safe_read_audio(length, blocking)
             )
         except Exception as e:
             raise TJA470SipError(f"Failed to read audio: {e}") from e
@@ -74,7 +115,7 @@ class TJA470SipCall:
         except Exception as e:
             raise TJA470SipError(f"Failed to write audio: {e}") from e
 
-    async def read_audio_16bit(self, length: int = 320, blocking: bool = True) -> bytes:
+    async def read_audio_16bit(self, length: int = 320, blocking: bool = False) -> bytes:
         """Read audio frames converted to standard 16-bit linear PCM at 8000Hz."""
         # pyVoIP's read_audio yields width=1 (8-bit) samples. 
         # A 16-bit sample (width=2) requires half the sample count for the same bytes length.
@@ -96,16 +137,16 @@ class TJA470SipCall:
 
     async def audio_stream(self, frame_size: int = 320, convert_16bit: bool = True):
         """Async generator yielding incoming audio frames (8000Hz, mono)."""
+        samples = (frame_size // 2) if convert_16bit else frame_size
+        frame_duration = samples / 8000.0
         while self.state == CallState.ANSWERED:
             try:
                 if convert_16bit:
-                    frame = await self.read_audio_16bit(frame_size, blocking=True)
+                    frame = await self.read_audio_16bit(frame_size, blocking=False)
                 else:
-                    frame = await self.read_audio(frame_size, blocking=True)
-                if not frame:
-                    await asyncio.sleep(0.01)
-                    continue
+                    frame = await self.read_audio(frame_size, blocking=False)
                 yield frame
+                await asyncio.sleep(frame_duration)
             except TJA470SipError:
                 break
             except Exception:
@@ -122,12 +163,14 @@ class TJA470SipPhone:
         sip_password: str,
         local_ip: str,
         sip_port: int = 5060,
+        rtp_port: Optional[int] = None,
     ) -> None:
         self.host = host
         self.sip_id = sip_id
         self.sip_password = sip_password
         self.local_ip = local_ip
         self.sip_port = sip_port
+        self.rtp_port = rtp_port
 
         self._phone: Optional[VoIPPhone] = None
         self._loop = asyncio.get_running_loop()
@@ -154,15 +197,15 @@ class TJA470SipPhone:
         return self._phone.get_status()
 
     def _incoming_call_thread_callback(self, raw_call: VoIPCall) -> None:
-        sip_call = TJA470SipCall(raw_call, self._loop)
-        if self._on_incoming_call_cb:
+        if self._on_incoming_call_cb is not None:
+            call = TJA470SipCall(raw_call, self._loop)
             self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._on_incoming_call_cb(sip_call))
+                lambda: asyncio.create_task(self._on_incoming_call_cb(call))
             )
 
-    def _fatal_thread_callback(self) -> None:
-        _LOGGER.error("SIP registration encountered a fatal failure")
-        if self._on_registration_state_changed_cb:
+    def _fatal_thread_callback(self, exception: Exception) -> None:
+        _LOGGER.error("Fatal SIP engine thread error: %s", exception)
+        if self._on_registration_state_changed_cb is not None:
             self._loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(
                     self._on_registration_state_changed_cb(PhoneStatus.FAILED)
@@ -174,6 +217,11 @@ class TJA470SipPhone:
         if self._phone is not None:
             raise TJA470SipError("SIP Phone is already started")
 
+        kwargs = {}
+        if self.rtp_port is not None:
+            kwargs["rtpPortLow"] = self.rtp_port
+            kwargs["rtpPortHigh"] = self.rtp_port
+
         self._phone = VoIPPhone(
             server=self.host,
             port=5060,
@@ -182,6 +230,7 @@ class TJA470SipPhone:
             myIP=self.local_ip,
             sipPort=self.sip_port,
             callCallback=self._incoming_call_thread_callback,
+            **kwargs
         )
         self._phone.sip.fatalCallback = self._fatal_thread_callback
 

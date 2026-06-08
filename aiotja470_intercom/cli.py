@@ -55,6 +55,10 @@ async def async_main():
     # `sip` command
     sip_parser = subparsers.add_parser("sip", help="Start SIP client to receive/make calls")
     sip_parser.add_argument("--call", help="Optional target number/SIP ID to call immediately upon startup")
+    sip_parser.add_argument("--record-to", help="Optional WAV file path to record incoming call audio to")
+    sip_parser.add_argument("--play-tone", action="store_true", help="Play a 440Hz test tone to the intercom speaker when a call is active")
+    sip_parser.add_argument("--local-ip", help="Override the automatically detected local IP address for SIP routing (useful inside WSL/NAT)")
+    sip_parser.add_argument("--rtp-port", type=int, help="Override/lock the UDP port used for RTP audio (default: 10000)")
 
     args = parser.parse_args()
 
@@ -310,18 +314,32 @@ def get_free_sip_port(ip: str) -> int:
             return 5061
 
 
-async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initial_call: Optional[str] = None, debug_sip: bool = False):
+async def run_sip_client_async(
+    host: str,
+    sip_id: str,
+    sip_password: str,
+    initial_call: Optional[str] = None,
+    debug_sip: bool = False,
+    record_to: Optional[str] = None,
+    play_tone: bool = False,
+    local_ip: Optional[str] = None,
+    rtp_port: Optional[int] = None,
+):
     import time
     import pyVoIP
     from aiotja470_intercom.sip import TJA470SipPhone, TJA470SipCall
     from pyVoIP.VoIP.status import PhoneStatus
+    from pyVoIP.VoIP import CallState
 
     if debug_sip:
         pyVoIP.DEBUG = True
         print("SIP client debug logging enabled.")
 
-    local_ip = get_local_ip(host)
-    print(f"Detected local IP to route to intercom: {local_ip}")
+    if not local_ip:
+        local_ip = get_local_ip(host)
+        print(f"Detected local IP to route to intercom: {local_ip}")
+    else:
+        print(f"Using overridden local IP: {local_ip}")
     
     sip_port = get_free_sip_port(local_ip)
     print(f"Local SIP Client Port: {sip_port}")
@@ -330,6 +348,86 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
 
     active_call: Optional[TJA470SipCall] = None
     call_lock = asyncio.Lock()
+    monitored_calls = set()
+    record_task: Optional[asyncio.Task] = None
+    tone_task: Optional[asyncio.Task] = None
+
+    async def stop_call_tasks():
+        nonlocal record_task, tone_task
+        if record_task:
+            record_task.cancel()
+            try:
+                await record_task
+            except asyncio.CancelledError:
+                pass
+            record_task = None
+        if tone_task:
+            tone_task.cancel()
+            try:
+                await tone_task
+            except asyncio.CancelledError:
+                pass
+            tone_task = None
+
+    async def record_audio_task(call: TJA470SipCall, path: str):
+        import wave
+        print(f"\n🎙️ Recording incoming audio to {path}...")
+        try:
+            with wave.open(path, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(8000)
+                async for frame in call.audio_stream(convert_16bit=True):
+                    wav_file.writeframes(frame)
+            print(f"\n💾 Audio recording saved to {path}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"\n❌ Audio recording error: {e}")
+
+    async def play_tone_task(call: TJA470SipCall):
+        import math
+        import struct
+        print("\n🔊 Playing 440Hz test tone to the intercom speaker...")
+        num_samples = int(8000 * (20 / 1000.0))
+        audio_data = bytearray()
+        for i in range(num_samples):
+            sample = int(32767 * math.sin(2 * math.pi * 440 * (i / 8000)))
+            audio_data.extend(struct.pack("<h", sample))
+        tone_20ms = bytes(audio_data)
+        
+        try:
+            while call.state == CallState.ANSWERED:
+                await call.write_audio_16bit(tone_20ms)
+                await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"\n❌ Tone playback error: {e}")
+
+    async def monitor_call_audio(call: TJA470SipCall):
+        if call in monitored_calls:
+            return
+        monitored_calls.add(call)
+        
+        # Wait for call to be answered
+        while call.state in (CallState.DIALING, CallState.RINGING):
+            await asyncio.sleep(0.1)
+        
+        if call.state == CallState.ANSWERED:
+            tasks = []
+            if record_to:
+                tasks.append(asyncio.create_task(record_audio_task(call, record_to)))
+            if play_tone:
+                tasks.append(asyncio.create_task(play_tone_task(call)))
+            
+            # Wait until call ends
+            while call.state == CallState.ANSWERED:
+                await asyncio.sleep(0.5)
+            
+            for t in tasks:
+                t.cancel()
+            await stop_call_tasks()
 
     async def on_incoming_call(call: TJA470SipCall) -> None:
         nonlocal active_call
@@ -339,6 +437,7 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
         print("Press 'a' to answer, 'r' to reject/busy.")
         sys.stdout.write("> ")
         sys.stdout.flush()
+        asyncio.create_task(monitor_call_audio(call))
 
     async def on_registration_state_changed(status: PhoneStatus) -> None:
         print(f"\n🔄 SIP Registration State Changed: {status}")
@@ -351,6 +450,7 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
         sip_password=sip_password,
         local_ip=local_ip,
         sip_port=sip_port,
+        rtp_port=rtp_port,
     )
     phone.register_incoming_call_callback(on_incoming_call)
     phone.register_registration_state_callback(on_registration_state_changed)
@@ -363,24 +463,28 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
     print(f"SIP Registration Status: {phone.get_status()}")
 
     print("\nSIP Interactive CLI commands:")
-    print("  c <number> : Make outgoing call to <number> (e.g. extension or camera SIP ID)")
-    print("  a          : Answer incoming call")
-    print("  h          : Hang up active call")
-    print("  r          : Reject/deny incoming call")
-    print("  status     : Show current registration and call status")
-    print("  q          : Quit")
+    print("  c <number>   : Make outgoing call to <number> (e.g. extension or camera SIP ID)")
+    print("  a            : Answer incoming call")
+    print("  h            : Hang up active call")
+    print("  r            : Reject/deny incoming call")
+    print("  record <file>: Record incoming audio to a WAV file")
+    print("  record off   : Stop recording")
+    print("  tone         : Play a 440Hz test tone to the intercom speaker")
+    print("  tone off     : Stop playing the test tone")
+    print("  status       : Show current registration and call status")
+    print("  q            : Quit")
 
     if initial_call:
         print(f"\nDialing initial target {initial_call}...")
         async with call_lock:
             active_call = await phone.call(initial_call)
         print("Call initiated.")
+        asyncio.create_task(monitor_call_audio(active_call))
 
     loop = asyncio.get_running_loop()
 
     try:
         while True:
-            # Non-blocking read of stdin using run_in_executor
             cmd = await loop.run_in_executor(None, lambda: input("> ").strip())
             if not cmd:
                 continue
@@ -390,8 +494,10 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
                 target = cmd[2:].strip()
                 print(f"Dialing {target}...")
                 async with call_lock:
+                    await stop_call_tasks()
                     active_call = await phone.call(target)
                 print("Call initiated.")
+                asyncio.create_task(monitor_call_audio(active_call))
             elif cmd == "a":
                 async with call_lock:
                     if active_call:
@@ -402,6 +508,7 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
                         print("No active call to answer.")
             elif cmd == "h":
                 async with call_lock:
+                    await stop_call_tasks()
                     if active_call:
                         print("Hanging up...")
                         await active_call.hangup()
@@ -411,6 +518,7 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
                         print("No active call to hang up.")
             elif cmd == "r":
                 async with call_lock:
+                    await stop_call_tasks()
                     if active_call:
                         print("Rejecting call...")
                         await active_call.deny()
@@ -418,6 +526,40 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
                         active_call = None
                     else:
                         print("No active call to reject.")
+            elif cmd.startswith("record "):
+                arg = cmd[7:].strip()
+                if arg == "off":
+                    if record_task:
+                        record_task.cancel()
+                        record_task = None
+                        print("Recording stopped.")
+                    else:
+                        print("No active recording to stop.")
+                else:
+                    async with call_lock:
+                        if not active_call or active_call.state != CallState.ANSWERED:
+                            print("Error: No active answered call.")
+                        elif record_task:
+                            print("Already recording to a file.")
+                        else:
+                            record_task = asyncio.create_task(record_audio_task(active_call, arg))
+            elif cmd == "record":
+                print("Usage: record <file> or record off")
+            elif cmd == "tone":
+                async with call_lock:
+                    if not active_call or active_call.state != CallState.ANSWERED:
+                        print("Error: No active answered call.")
+                    elif tone_task:
+                        print("Tone is already playing.")
+                    else:
+                        tone_task = asyncio.create_task(play_tone_task(active_call))
+            elif cmd == "tone off":
+                if tone_task:
+                    tone_task.cancel()
+                    tone_task = None
+                    print("Tone stopped.")
+                else:
+                    print("No tone playing.")
             elif cmd == "status":
                 print(f"SIP Registration Status: {phone.get_status()}")
                 async with call_lock:
@@ -426,10 +568,11 @@ async def run_sip_client_async(host: str, sip_id: str, sip_password: str, initia
                     else:
                         print("No active call.")
             else:
-                print("Unknown command. Try: c <number>, a, h, r, status, q")
+                print("Unknown command. Try: c <number>, a, h, r, record <file>, record off, tone, tone off, status, q")
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
+        await stop_call_tasks()
         print("Stopping SIP client...")
         await phone.stop()
 
@@ -486,7 +629,17 @@ async def run_sip(args):
             sys.exit(1)
 
         # Run pyVoIP client in async mode
-        await run_sip_client_async(host, sip_id, sip_password, args.call, debug_sip=args.debug)
+        await run_sip_client_async(
+            host,
+            sip_id,
+            sip_password,
+            args.call,
+            debug_sip=args.debug,
+            record_to=args.record_to,
+            play_tone=args.play_tone,
+            local_ip=args.local_ip,
+            rtp_port=args.rtp_port,
+        )
 
     except Exception as e:
         print(f"\n❌ An error occurred: {e}")

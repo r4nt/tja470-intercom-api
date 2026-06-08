@@ -133,9 +133,64 @@ await client.switch_camera("your-uuid-string")
 await client.open_door_at_position("your-uuid-string", position=0)
 ```
 
+
+### SIP & Audio Stream API
+
+The library includes an asynchronous wrapper around `pyVoIP` to handle SIP registration, make/receive VoIP calls, and stream audio. 
+To avoid blocking the asyncio event loop (a critical requirement for Home Assistant integrations), all blocking pyVoIP I/O operations are run in an executor thread, and callbacks are dispatched thread-safely back to the main loop.
+
+#### Basic SIP Setup
+
+```python
+from aiotja470_intercom import TJA470SipPhone, TJA470SipCall, PhoneStatus
+
+# Initialize the SIP Phone client using provisioning details
+sip_phone = TJA470SipPhone(
+    host="192.168.1.100",           # Intercom host IP
+    sip_id="6004",                  # SIP Extension username from provisioning
+    sip_password="your_password",   # SIP password from provisioning
+    local_ip="192.168.1.50",        # Local IP of the system running the client
+    sip_port=5060,                  # Local SIP port to bind
+)
+
+# Register callbacks for incoming calls and status changes
+async def on_incoming_call(call: TJA470SipCall):
+    print(f"Incoming call from: {call.caller}")
+    # Answer the call
+    await call.answer()
+    
+    # Process audio stream asynchronously
+    async for frame in call.audio_stream(frame_size=320, convert_16bit=True):
+        # frame is a 20ms chunk of 16-bit linear PCM audio at 8000Hz (mono)
+        # Process the audio or pipe it to a websocket/media player
+        pass
+
+async def on_registration_status(status: PhoneStatus):
+    print(f"SIP Registration Status: {status}")
+
+sip_phone.register_incoming_call_callback(on_incoming_call)
+sip_phone.register_registration_state_callback(on_registration_status)
+
+# Start the SIP client (initiates non-blocking registration)
+await sip_phone.start()
+
+# Later, initiate an outgoing call
+# call = await sip_phone.call("6000")
+
+# Stop the SIP client and unregister
+# await sip_phone.stop()
+```
+
+#### Audio Processing
+The library provides helper methods for reading and writing audio in standard formats (8-bit or 16-bit PCM at 8000Hz):
+- `await call.read_audio_16bit(length=320)`: Reads standard 16-bit linear PCM audio.
+- `await call.write_audio_16bit(data)`: Converts and transmits standard 16-bit linear PCM audio.
+- `call.audio_stream(frame_size=320, convert_16bit=True)`: Async generator helper to continuously consume incoming audio.
+
 ## Exception Handling
 The library provides native Home Assistant style typed exceptions:
 - `TJA470Error`: Base class for all library errors.
 - `TJA470ConnectionError`: Raised on timeouts, unreachable host, or DNS failures.
 - `TJA470AuthError`: Raised on `401 Unauthorized` or `403 Forbidden`.
 - `TJA470ResponseError`: Raised when the intercom returns invalid JSON or unexpected schema data.
+- `TJA470SipError`: Raised during SIP or audio streaming operations.

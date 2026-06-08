@@ -80,19 +80,21 @@ async def test_sip_call_16bit_audio():
     loop = asyncio.get_running_loop()
     call = TJA470SipCall(mock_raw_call, loop)
     
-    # 8-bit linear data (width=1), 80 samples
-    mock_raw_call.read_audio.return_value = b"\x00" * 80
+    # 8-bit linear data (width=1), 80 samples of unsigned silence (0x80)
+    mock_raw_call.read_audio.return_value = b"\x80" * 80
     
     # We want 160 bytes of 16-bit PCM (80 samples, width=2)
     audio = await call.read_audio_16bit(160, True)
     assert len(audio) == 160
+    # Converted unsigned silence (0x80) should become signed 16-bit silence (0x00)
+    assert audio == b"\x00" * 160
     # verify conversion
     mock_raw_call.read_audio.assert_called_once_with(80, True)
     
-    # Write 160 bytes of 16-bit PCM
+    # Write 160 bytes of signed 16-bit PCM silence
     await call.write_audio_16bit(b"\x00" * 160)
-    # verify it converts to 80 bytes of 8-bit PCM
-    mock_raw_call.write_audio.assert_called_once_with(b"\x00" * 80)
+    # verify it converts to 80 bytes of unsigned 8-bit PCM silence (0x80)
+    mock_raw_call.write_audio.assert_called_once_with(b"\x80" * 80)
 
 @pytest.mark.asyncio
 async def test_sip_call_audio_stream():
@@ -101,16 +103,19 @@ async def test_sip_call_audio_stream():
     loop = asyncio.get_running_loop()
     call = TJA470SipCall(mock_raw_call, loop)
     
-    mock_raw_call.read_audio.return_value = b"\x00" * 80
+    # Unsigned 8-bit silence
+    mock_raw_call.read_audio.return_value = b"\x80" * 80
     
-    frames = []
     # Consume 2 frames from generator
+    frames = []
     async for frame in call.audio_stream(160):
         frames.append(frame)
         if len(frames) == 2:
             mock_raw_call.state = CallState.ENDED  # Stop the generator loop
             
     assert len(frames) == 2
+    # Should yield signed 16-bit silence
     assert frames[0] == b"\x00" * 160
     assert frames[1] == b"\x00" * 160
+
 

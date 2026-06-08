@@ -57,7 +57,7 @@ class TJA470SipCall:
             raise TJA470SipError(f"Failed to deny call: {e}") from e
 
     async def read_audio(self, length: int = 160, blocking: bool = True) -> bytes:
-        """Read audio frames from the call."""
+        """Read audio frames from the call (default 8-bit linear PCM at 8000Hz)."""
         try:
             return await self._loop.run_in_executor(
                 None, lambda: self._raw_call.read_audio(length, blocking)
@@ -66,13 +66,50 @@ class TJA470SipCall:
             raise TJA470SipError(f"Failed to read audio: {e}") from e
 
     async def write_audio(self, data: bytes) -> None:
-        """Write audio frames to the call."""
+        """Write audio frames to the call (default 8-bit linear PCM at 8000Hz)."""
         try:
             await self._loop.run_in_executor(
                 None, lambda: self._raw_call.write_audio(data)
             )
         except Exception as e:
             raise TJA470SipError(f"Failed to write audio: {e}") from e
+
+    async def read_audio_16bit(self, length: int = 320, blocking: bool = True) -> bytes:
+        """Read audio frames converted to standard 16-bit linear PCM at 8000Hz."""
+        # pyVoIP's read_audio yields width=1 (8-bit) samples. 
+        # A 16-bit sample (width=2) requires half the sample count for the same bytes length.
+        raw_8bit = await self.read_audio(length // 2, blocking)
+        import audioop
+        try:
+            return audioop.lin2lin(raw_8bit, 1, 2)
+        except Exception as e:
+            raise TJA470SipError(f"Failed to convert audio from 8-bit to 16-bit: {e}") from e
+
+    async def write_audio_16bit(self, data: bytes) -> None:
+        """Write audio frames provided in standard 16-bit linear PCM at 8000Hz."""
+        import audioop
+        try:
+            raw_8bit = audioop.lin2lin(data, 2, 1)
+        except Exception as e:
+            raise TJA470SipError(f"Failed to convert audio from 16-bit to 8-bit: {e}") from e
+        await self.write_audio(raw_8bit)
+
+    async def audio_stream(self, frame_size: int = 320, convert_16bit: bool = True):
+        """Async generator yielding incoming audio frames (8000Hz, mono)."""
+        while self.state == CallState.ANSWERED:
+            try:
+                if convert_16bit:
+                    frame = await self.read_audio_16bit(frame_size, blocking=True)
+                else:
+                    frame = await self.read_audio(frame_size, blocking=True)
+                if not frame:
+                    await asyncio.sleep(0.01)
+                    continue
+                yield frame
+            except TJA470SipError:
+                break
+            except Exception:
+                break
 
 
 class TJA470SipPhone:

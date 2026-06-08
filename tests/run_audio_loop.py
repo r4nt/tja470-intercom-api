@@ -81,19 +81,53 @@ async def main():
             print(f"❌ Recording error: {e}")
 
     async def play_tone(call: TJA470SipCall):
-        print("🔊 Generating and sending 440Hz tone...")
-        num_samples = int(8000 * (20 / 1000.0))
-        audio_data = bytearray()
-        for i in range(num_samples):
-            sample = int(32767 * math.sin(2 * math.pi * 440 * (i / 8000)))
-            audio_data.extend(struct.pack("<h", sample))
-        tone_20ms = bytes(audio_data)
-
+        print("🔊 Playing a little song (Twinkle Twinkle Little Star)...")
+        # Melody: tuples of (frequency_hz, duration_seconds)
+        C4, D4, E4, F4, G4, A4 = 261.63, 293.66, 329.63, 349.23, 392.00, 440.00
+        
+        melody = [
+            (C4, 0.4), (C4, 0.4), (G4, 0.4), (G4, 0.4), (A4, 0.4), (A4, 0.4), (G4, 0.8),
+            (F4, 0.4), (F4, 0.4), (E4, 0.4), (E4, 0.4), (D4, 0.4), (D4, 0.4), (C4, 0.8),
+            (G4, 0.4), (G4, 0.4), (F4, 0.4), (F4, 0.4), (E4, 0.4), (E4, 0.4), (D4, 0.8),
+            (G4, 0.4), (G4, 0.4), (F4, 0.4), (F4, 0.4), (E4, 0.4), (E4, 0.4), (D4, 0.8),
+            (C4, 0.4), (C4, 0.4), (G4, 0.4), (G4, 0.4), (A4, 0.4), (A4, 0.4), (G4, 0.8),
+            (F4, 0.4), (F4, 0.4), (E4, 0.4), (E4, 0.4), (D4, 0.4), (D4, 0.4), (C4, 0.8)
+        ]
+        
         try:
             from pyVoIP.VoIP import CallState
+            note_idx = 0
+            elapsed_note_time = 0.0
+            sample_count = 0
+            
             while call.state == CallState.ANSWERED:
-                await call.write_audio_16bit(tone_20ms)
-                await asyncio.sleep(0.02)
+                freq, duration = melody[note_idx % len(melody)]
+                
+                # Check if we are in the last 15% of the note's duration (rest / gap)
+                is_rest = elapsed_note_time > (duration * 0.85)
+                
+                chunk_duration = 0.02
+                num_samples = int(8000 * chunk_duration)
+                audio_data = bytearray()
+                
+                if is_rest or freq == 0:
+                    audio_data.extend(b"\x00" * (num_samples * 2))
+                else:
+                    for _ in range(num_samples):
+                        t = sample_count / 8000.0
+                        sample = int(16384 * math.sin(2 * math.pi * freq * t))
+                        audio_data.extend(struct.pack("<h", sample))
+                        sample_count += 1
+                        
+                await call.write_audio_16bit(bytes(audio_data))
+                
+                elapsed_note_time += chunk_duration
+                if elapsed_note_time >= duration:
+                    note_idx += 1
+                    elapsed_note_time = 0.0
+                    sample_count = 0  # reset phase for next note
+                    
+                await asyncio.sleep(chunk_duration)
         except asyncio.CancelledError:
             pass
 

@@ -48,3 +48,5 @@ coverage.xml
 
 # Local config for test runner
 .tja470_config.json
+
+loop_test.wav

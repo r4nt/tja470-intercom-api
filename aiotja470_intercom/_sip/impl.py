@@ -210,6 +210,7 @@ class TJA470SipCall:
 
         self._state = CallState.RINGING if is_incoming else CallState.DIALING
         self._caller = "unknown"
+        self._on_state_changed_cb = None
 
         self.rtp_port = 0
         self.remote_rtp_ip = ""
@@ -231,6 +232,16 @@ class TJA470SipCall:
     def state(self) -> CallState:
         """Get the current call state."""
         return self._state
+
+    def register_state_callback(
+        self, callback: Callable[[CallState], Coroutine[Any, Any, None]]
+    ) -> None:
+        """Register an async callback for call state changes."""
+        self._on_state_changed_cb = callback
+
+    def _notify_state_changed(self) -> None:
+        if self._on_state_changed_cb:
+            asyncio.create_task(self._on_state_changed_cb(self._state))
 
     @property
     def caller(self) -> str:
@@ -303,6 +314,7 @@ class TJA470SipCall:
 
             self.phone._send_packet(response.encode("utf-8"), self.phone._remote_addr)
             self._state = CallState.ANSWERED
+            self._notify_state_changed()
         except Exception as e:
             self._cleanup()
             raise TJA470SipError(f"Failed to answer call: {e}") from e
@@ -356,6 +368,7 @@ class TJA470SipCall:
     def _cleanup(self):
         """Clean up sockets and set state to ENDED."""
         self._state = CallState.ENDED
+        self._notify_state_changed()
         if self._rtp_transport:
             self._rtp_transport.close()
             self._rtp_transport = None
@@ -688,6 +701,7 @@ class TJA470SipPhone:
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
                     if self._active_call._state == CallState.RINGING or self._active_call._state == CallState.ANSWERED:
                         self._active_call._state = CallState.ANSWERED
+                        self._active_call._notify_state_changed()
 
             elif msg.method == "BYE":
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
@@ -795,6 +809,7 @@ class TJA470SipPhone:
                         self._send_packet(ack.encode("utf-8"), addr)
 
                         self._active_call._state = CallState.ANSWERED
+                        self._active_call._notify_state_changed()
                         if self._active_call._answered_future and not self._active_call._answered_future.done():
                             self._active_call._answered_future.set_result(None)
 
@@ -843,6 +858,7 @@ class TJA470SipPhone:
 
                     elif msg.status_code == 180 or msg.status_code == 183:
                         self._active_call._state = CallState.RINGING
+                        self._active_call._notify_state_changed()
 
                     elif msg.status_code >= 300:
                         # Call failed or declined

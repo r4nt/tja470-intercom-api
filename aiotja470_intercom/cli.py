@@ -409,25 +409,38 @@ async def run_sip_client_async(
         if call in monitored_calls:
             return
         monitored_calls.add(call)
-        
-        # Wait for call to be answered
-        while call.state in (CallState.DIALING, CallState.RINGING):
-            await asyncio.sleep(0.1)
-        
-        if call.state == CallState.ANSWERED:
-            tasks = []
-            if record_to:
-                tasks.append(asyncio.create_task(record_audio_task(call, record_to)))
-            if play_tone:
-                tasks.append(asyncio.create_task(play_tone_task(call)))
-            
-            # Wait until call ends
-            while call.state == CallState.ANSWERED:
-                await asyncio.sleep(0.5)
-            
-            for t in tasks:
-                t.cancel()
-            await stop_call_tasks()
+
+        tasks = []
+
+        async def on_call_state_changed(state: CallState):
+            nonlocal active_call
+            print(f"\n📞 Call State: {state.name}")
+            sys.stdout.write("> ")
+            sys.stdout.flush()
+
+            if state == CallState.ANSWERED:
+                # Start recording or tone tasks if they aren't already running
+                if record_to and not any(t.get_name() == "record" for t in tasks):
+                    t = asyncio.create_task(record_audio_task(call, record_to))
+                    t.set_name("record")
+                    tasks.append(t)
+                if play_tone and not any(t.get_name() == "tone" for t in tasks):
+                    t = asyncio.create_task(play_tone_task(call))
+                    t.set_name("tone")
+                    tasks.append(t)
+            elif state == CallState.ENDED:
+                async with call_lock:
+                    if active_call == call:
+                        active_call = None
+                for t in tasks:
+                    t.cancel()
+                tasks.clear()
+                await stop_call_tasks()
+
+        call.register_state_callback(on_call_state_changed)
+        # Notify of the initial state
+        await on_call_state_changed(call.state)
+
 
     async def on_incoming_call(call: TJA470SipCall) -> None:
         nonlocal active_call

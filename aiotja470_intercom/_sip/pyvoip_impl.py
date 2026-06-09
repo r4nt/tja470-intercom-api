@@ -44,6 +44,38 @@ class TJA470SipCall:
     def __init__(self, raw_call: VoIPCall, loop: asyncio.AbstractEventLoop) -> None:
         self._raw_call = raw_call
         self._loop = loop
+        self._on_state_changed_cb: Optional[Callable[[CallState], Coroutine[Any, Any, None]]] = None
+        self._monitor_task: Optional[asyncio.Task] = None
+        self._last_state = raw_call.state
+
+    def register_state_callback(
+        self, callback: Callable[[CallState], Coroutine[Any, Any, None]]
+    ) -> None:
+        """Register an async callback for call state changes."""
+        self._on_state_changed_cb = callback
+        if not self._monitor_task:
+            self._monitor_task = self._loop.create_task(self._monitor_state_loop())
+
+    async def _monitor_state_loop(self) -> None:
+        while self._raw_call.state != CallState.ENDED:
+            current_state = self._raw_call.state
+            if current_state != self._last_state:
+                self._last_state = current_state
+                if self._on_state_changed_cb:
+                    try:
+                        await self._on_state_changed_cb(current_state)
+                    except Exception as e:
+                        _LOGGER.error("Error in call state callback: %s", e)
+            await asyncio.sleep(0.1)
+
+        # Fire final ENDED state if we haven't already
+        if self._last_state != CallState.ENDED:
+            self._last_state = CallState.ENDED
+            if self._on_state_changed_cb:
+                try:
+                    await self._on_state_changed_cb(CallState.ENDED)
+                except Exception as e:
+                    _LOGGER.error("Error in call state callback: %s", e)
 
     @property
     def state(self) -> CallState:

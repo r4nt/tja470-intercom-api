@@ -234,3 +234,110 @@ def test_sip_options_ping():
     assert "SIP/2.0 200 OK" in sent_str
     assert "CSeq: 1 OPTIONS" in sent_str
     assert "Call-ID: call-12345@192.168.42.2" in sent_str
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("SipCallClass", [PyvoipSipCall, CustomSipCall])
+async def test_call_state_callback(SipCallClass):
+    loop = asyncio.get_running_loop()
+    call, mock_backend = make_call_instance(SipCallClass, loop)
+    
+    states_received = []
+    async def state_cb(state):
+        states_received.append(state)
+        
+    call.register_state_callback(state_cb)
+    
+    if SipCallClass == PyvoipSipCall:
+        # For pyVoIP, state is updated on the raw call and monitored
+        mock_backend.state = CallState.ANSWERED
+        # Wait a bit for the monitor loop to catch the state change
+        await asyncio.sleep(0.15)
+        assert CallState.ANSWERED in states_received
+        
+        mock_backend.state = CallState.ENDED
+        await asyncio.sleep(0.15)
+        assert CallState.ENDED in states_received
+    else:
+        # For CustomSipCall, we notify call state changes when they happen
+        call._state = CallState.ANSWERED
+        call._notify_state_changed()
+        # Yield to event loop to process task
+        await asyncio.sleep(0.01)
+        assert CallState.ANSWERED in states_received
+        
+        call._state = CallState.ENDED
+        call._notify_state_changed()
+        await asyncio.sleep(0.01)
+        assert CallState.ENDED in states_received
+
+
+@pytest.mark.asyncio
+async def test_custom_phone_callbacks():
+    loop = asyncio.get_running_loop()
+    
+    # Mock datagram endpoint creation
+    mock_transport = MagicMock(spec=asyncio.DatagramTransport)
+    protocol_instance = None
+    
+    def mock_create_endpoint(protocol_factory, local_addr=None):
+        nonlocal protocol_instance
+        protocol_instance = protocol_factory()
+        return mock_transport, protocol_instance
+        
+    with patch.object(loop, "create_datagram_endpoint", side_effect=mock_create_endpoint):
+        phone = CustomSipPhone("192.168.42.2", "6008", "pass", "127.0.0.1", 5060)
+        
+        reg_states = []
+        async def on_reg_changed(status):
+            reg_states.append(status)
+            
+        incoming_calls = []
+        async def on_incoming_call(call):
+            incoming_calls.append(call)
+            
+        phone.register_registration_state_callback(on_reg_changed)
+        phone.register_incoming_call_callback(on_incoming_call)
+        
+        await phone.start()
+        
+        # Simulate registration success
+        raw_200_ok = (
+            b"SIP/2.0 200 OK\r\n"
+            b"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK12345\r\n"
+            b"From: <sip:6008@192.168.42.2>;tag=abc\r\n"
+            b"To: <sip:6008@192.168.42.2>;tag=def\r\n"
+            b"Call-ID: call-id-123\r\n"
+            b"CSeq: 1 REGISTER\r\n"
+            b"Content-Length: 0\r\n\r\n"
+        )
+        protocol_instance.datagram_received(raw_200_ok, ("192.168.42.2", 5060))
+        await asyncio.sleep(0.01)
+        assert PhoneStatus.REGISTERED in reg_states
+        
+        # Simulate incoming call INVITE
+        raw_invite = (
+            b"INVITE sip:6008@127.0.0.1 SIP/2.0\r\n"
+            b"Via: SIP/2.0/UDP 192.168.42.2:5060;branch=z9hG4bK67890\r\n"
+            b"From: <sip:6001@192.168.42.2>;tag=uvw\r\n"
+            b"To: <sip:6008@127.0.0.1>\r\n"
+            b"Call-ID: call-id-456\r\n"
+            b"CSeq: 1 INVITE\r\n"
+            b"Content-Type: application/sdp\r\n"
+            b"Content-Length: 125\r\n\r\n"
+            b"v=0\r\n"
+            b"o=caller 0 0 IN IP4 192.168.42.2\r\n"
+            b"s=Session\r\n"
+            b"c=IN IP4 192.168.42.2\r\n"
+            b"t=0 0\r\n"
+            b"m=audio 10002 RTP/AVP 0\r\n"
+            b"a=rtpmap:0 PCMU/8000\r\n"
+        )
+        protocol_instance.datagram_received(raw_invite, ("192.168.42.2", 5060))
+        await asyncio.sleep(0.01)
+        assert len(incoming_calls) == 1
+        assert incoming_calls[0].caller == "6001"
+        assert incoming_calls[0].state == CallState.RINGING
+        
+        await phone.stop()
+

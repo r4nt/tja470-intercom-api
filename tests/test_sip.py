@@ -261,15 +261,13 @@ async def test_call_state_callback(SipCallClass):
     else:
         # For CustomSipCall, we notify call state changes when they happen
         call._state = CallState.ANSWERED
-        call._notify_state_changed()
-        # Yield to event loop to process task
-        await asyncio.sleep(0.01)
+        await call._notify_state_changed()
         assert CallState.ANSWERED in states_received
         
         call._state = CallState.ENDED
-        call._notify_state_changed()
-        await asyncio.sleep(0.01)
+        await call._notify_state_changed()
         assert CallState.ENDED in states_received
+
 
 
 @pytest.mark.asyncio

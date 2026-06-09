@@ -228,6 +228,9 @@ class TJA470SipCall:
         # Future used to wait for DIALING -> ANSWERED transitions in outbound calls
         self._answered_future: Optional[asyncio.Future[None]] = None
 
+        self._silence_generator_task: Optional[asyncio.Task] = None
+        self._last_write_time = 0.0
+
     @property
     def state(self) -> CallState:
         """Get the current call state."""
@@ -239,9 +242,49 @@ class TJA470SipCall:
         """Register an async callback for call state changes."""
         self._on_state_changed_cb = callback
 
-    def _notify_state_changed(self) -> None:
+    async def _notify_state_changed(self) -> None:
+        if self._state == CallState.ANSWERED and not self._silence_generator_task:
+            self._silence_generator_task = asyncio.create_task(self._silence_loop())
+        elif self._state == CallState.ENDED and self._silence_generator_task:
+            self._silence_generator_task.cancel()
+            self._silence_generator_task = None
+
         if self._on_state_changed_cb:
-            asyncio.create_task(self._on_state_changed_cb(self._state))
+            try:
+                await self._on_state_changed_cb(self._state)
+            except Exception as e:
+                _LOGGER.error("Error in call state callback: %s", e)
+
+    async def _silence_loop(self):
+        """Loop sending G.711 PCMU/PCMA silence packets to keep call alive when no audio is written."""
+        linear_silence = b"\x00" * 320
+        try:
+            if self.codec == 0:
+                silence_packet = audioop.lin2ulaw(linear_silence, 2)
+            elif self.codec == 8:
+                silence_packet = audioop.lin2alaw(linear_silence, 2)
+            else:
+                silence_packet = b"\xff" * 160
+        except Exception:
+            silence_packet = b"\xff" * 160
+
+        try:
+            while self._state == CallState.ANSWERED:
+                current_time = asyncio.get_running_loop().time()
+                # If no audio was written in the last 40ms, send a silence packet
+                if current_time - self._last_write_time > 0.04:
+                    if self._rtp_transport:
+                        self._rtp_seq_num = (self._rtp_seq_num + 1) & 0xFFFF
+                        self._rtp_timestamp = (self._rtp_timestamp + 160) & 0xFFFFFFFF
+                        header = struct.pack(">BBHII", 0x80, self.codec, self._rtp_seq_num, self._rtp_timestamp, self._rtp_ssrc)
+                        packet = header + silence_packet
+                        try:
+                            self._rtp_transport.sendto(packet, (self.remote_rtp_ip, self.remote_rtp_port))
+                        except Exception:
+                            pass
+                await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            pass
 
     @property
     def caller(self) -> str:
@@ -314,9 +357,9 @@ class TJA470SipCall:
 
             self.phone._send_packet(response.encode("utf-8"), self.phone._remote_addr)
             self._state = CallState.ANSWERED
-            self._notify_state_changed()
+            await self._notify_state_changed()
         except Exception as e:
-            self._cleanup()
+            await self._cleanup()
             raise TJA470SipError(f"Failed to answer call: {e}") from e
 
     async def hangup(self) -> None:
@@ -341,7 +384,7 @@ class TJA470SipCall:
         except Exception as e:
             _LOGGER.debug("Error sending BYE: %s", e)
         finally:
-            self._cleanup()
+            await self._cleanup()
 
     async def deny(self) -> None:
         """Reject the call."""
@@ -363,17 +406,18 @@ class TJA470SipCall:
         except Exception as e:
             raise TJA470SipError(f"Failed to deny call: {e}") from e
         finally:
-            self._cleanup()
+            await self._cleanup()
 
-    def _cleanup(self):
+    async def _cleanup(self):
         """Clean up sockets and set state to ENDED."""
         self._state = CallState.ENDED
-        self._notify_state_changed()
         if self._rtp_transport:
             self._rtp_transport.close()
             self._rtp_transport = None
         if self.phone._active_call == self:
             self.phone._active_call = None
+        await self._notify_state_changed()
+
 
     async def read_audio(self, length: int = 160, blocking: bool = False) -> bytes:
         """Read raw audio frames from the call (default 8-bit linear PCM at 8000Hz)."""
@@ -428,6 +472,8 @@ class TJA470SipCall:
         """Write audio frames provided in standard 16-bit linear PCM at 8000Hz."""
         if self._state != CallState.ANSWERED or not self._rtp_transport:
             return
+
+        self._last_write_time = asyncio.get_running_loop().time()
 
         try:
             if self.codec == 0:
@@ -524,6 +570,7 @@ class TJA470SipPhone:
 
     def _send_packet(self, data: bytes, addr: tuple):
         """Send raw packet over UDP SIP socket."""
+        _LOGGER.debug("Sending SIP packet to %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         if self._sip_transport:
             self._sip_transport.sendto(data, addr)
 
@@ -611,6 +658,7 @@ class TJA470SipPhone:
 
     async def _handle_sip_packet(self, data: bytes, addr: tuple):
         """Process incoming raw SIP packet."""
+        _LOGGER.debug("Received SIP packet from %s:\n%s", addr, data.decode("utf-8", errors="replace"))
         try:
             msg = SipMessage(data)
             if not msg.version:
@@ -685,7 +733,7 @@ class TJA470SipPhone:
                     remote_tag=remote_tag,
                     call_id=call_id,
                     cseq_num=cseq_num,
-                    remote_uri=from_hdr.split(";")[0],
+                    remote_uri=clean_uri(from_hdr),
                 )
                 call._caller = caller
                 call._state = CallState.RINGING
@@ -701,7 +749,7 @@ class TJA470SipPhone:
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
                     if self._active_call._state == CallState.RINGING or self._active_call._state == CallState.ANSWERED:
                         self._active_call._state = CallState.ANSWERED
-                        self._active_call._notify_state_changed()
+                        await self._active_call._notify_state_changed()
 
             elif msg.method == "BYE":
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
@@ -716,7 +764,7 @@ class TJA470SipPhone:
                         f"Content-Length: 0\r\n\r\n"
                     )
                     self._send_packet(response.encode("utf-8"), addr)
-                    self._active_call._cleanup()
+                    await self._active_call._cleanup()
 
             elif msg.method == "CANCEL":
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
@@ -742,7 +790,7 @@ class TJA470SipPhone:
                         f"Content-Length: 0\r\n\r\n"
                     )
                     self._send_packet(terminated.encode("utf-8"), addr)
-                    self._active_call._cleanup()
+                    await self._active_call._cleanup()
 
         # 2. Handle incoming responses (status codes)
         else:
@@ -787,7 +835,13 @@ class TJA470SipPhone:
                         # Extract remote tag
                         to_hdr = msg.get_header("To")
                         self._active_call.remote_tag = parse_tag(to_hdr)
-                        self._active_call.remote_uri = to_hdr.split(";")[0]
+                        
+                        # Use Contact header for remote Request-URI in subsequent requests (ACK, BYE)
+                        contact_hdr = msg.get_header("Contact")
+                        if contact_hdr:
+                            self._active_call.remote_uri = clean_uri(contact_hdr)
+                        else:
+                            self._active_call.remote_uri = clean_uri(to_hdr)
 
                         # Parse remote SDP
                         sdp_info = parse_sdp(msg.body)
@@ -809,7 +863,7 @@ class TJA470SipPhone:
                         self._send_packet(ack.encode("utf-8"), addr)
 
                         self._active_call._state = CallState.ANSWERED
-                        self._active_call._notify_state_changed()
+                        await self._active_call._notify_state_changed()
                         if self._active_call._answered_future and not self._active_call._answered_future.done():
                             self._active_call._answered_future.set_result(None)
 
@@ -858,12 +912,12 @@ class TJA470SipPhone:
 
                     elif msg.status_code == 180 or msg.status_code == 183:
                         self._active_call._state = CallState.RINGING
-                        self._active_call._notify_state_changed()
+                        await self._active_call._notify_state_changed()
 
                     elif msg.status_code >= 300:
                         # Call failed or declined
                         call = self._active_call
-                        call._cleanup()
+                        await call._cleanup()
                         if call._answered_future and not call._answered_future.done():
                             call._answered_future.set_exception(
                                 TJA470SipError(f"Call rejected with status: {msg.status_code}")
@@ -877,7 +931,7 @@ class TJA470SipPhone:
         call = TJA470SipCall(
             phone=self,
             is_incoming=False,
-            remote_uri=f"<sip:{number}@{self.host}>",
+            remote_uri=f"sip:{number}@{self.host}",
         )
         call._caller = number
         call._state = CallState.DIALING
@@ -925,3 +979,17 @@ def parse_tag(header_val: str) -> str:
     if ";tag=" in header_val:
         return header_val.split(";tag=")[1].split(";")[0]
     return ""
+
+
+def clean_uri(header_val: str) -> str:
+    """Extract URI from header value, removing angle brackets and parameters."""
+    if not header_val:
+        return ""
+    # Look for content between < and >
+    match = re.search(r"<([^>]+)>", header_val)
+    if match:
+        uri = match.group(1).strip()
+    else:
+        uri = header_val.strip()
+    # Remove parameters after semicolon in the URI
+    return uri.split(";")[0].strip()

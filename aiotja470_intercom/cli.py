@@ -351,6 +351,7 @@ async def run_sip_client_async(
     monitored_calls = set()
     record_task: Optional[asyncio.Task] = None
     tone_task: Optional[asyncio.Task] = None
+    waiting_for_input = False
 
     async def stop_call_tasks():
         nonlocal record_task, tone_task
@@ -411,12 +412,18 @@ async def run_sip_client_async(
         monitored_calls.add(call)
 
         tasks = []
+        last_state = call.state
 
         async def on_call_state_changed(state: CallState):
-            nonlocal active_call
+            nonlocal active_call, last_state
+            if state == last_state:
+                return
+            last_state = state
+
             print(f"\n📞 Call State: {state.name}")
-            sys.stdout.write("> ")
-            sys.stdout.flush()
+            if waiting_for_input:
+                sys.stdout.write("> ")
+                sys.stdout.flush()
 
             if state == CallState.ANSWERED:
                 # Start recording or tone tasks if they aren't already running
@@ -429,33 +436,32 @@ async def run_sip_client_async(
                     t.set_name("tone")
                     tasks.append(t)
             elif state == CallState.ENDED:
-                async with call_lock:
-                    if active_call == call:
-                        active_call = None
+                if active_call == call:
+                    active_call = None
                 for t in tasks:
                     t.cancel()
                 tasks.clear()
                 await stop_call_tasks()
 
         call.register_state_callback(on_call_state_changed)
-        # Notify of the initial state
-        await on_call_state_changed(call.state)
+
 
 
     async def on_incoming_call(call: TJA470SipCall) -> None:
         nonlocal active_call
-        async with call_lock:
-            active_call = call
+        active_call = call
         print(f"\n📞 INCOMING CALL from {call.caller}!")
         print("Press 'a' to answer, 'r' to reject/busy.")
-        sys.stdout.write("> ")
-        sys.stdout.flush()
-        asyncio.create_task(monitor_call_audio(call))
+        await monitor_call_audio(call)
+        if waiting_for_input:
+            sys.stdout.write("> ")
+            sys.stdout.flush()
 
     async def on_registration_state_changed(status: PhoneStatus) -> None:
         print(f"\n🔄 SIP Registration State Changed: {status}")
-        sys.stdout.write("> ")
-        sys.stdout.flush()
+        if waiting_for_input:
+            sys.stdout.write("> ")
+            sys.stdout.flush()
 
     phone = TJA470SipPhone(
         host=host,
@@ -492,13 +498,15 @@ async def run_sip_client_async(
         async with call_lock:
             active_call = await phone.call(initial_call)
         print("Call initiated.")
-        asyncio.create_task(monitor_call_audio(active_call))
+        await monitor_call_audio(active_call)
 
     loop = asyncio.get_running_loop()
 
     try:
         while True:
+            waiting_for_input = True
             cmd = await loop.run_in_executor(None, lambda: input("> ").strip())
+            waiting_for_input = False
             if not cmd:
                 continue
             if cmd == "q":
@@ -510,7 +518,7 @@ async def run_sip_client_async(
                     await stop_call_tasks()
                     active_call = await phone.call(target)
                 print("Call initiated.")
-                asyncio.create_task(monitor_call_audio(active_call))
+                await monitor_call_audio(active_call)
             elif cmd == "a":
                 async with call_lock:
                     if active_call:

@@ -18,7 +18,10 @@ _LOGGER = logging.getLogger(__name__)
 
 class TJA470SipError(TJA470Error):
     """Exception raised for errors during SIP operations."""
-    pass
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 
 class SipMessage:
@@ -199,6 +202,8 @@ class TJA470SipCall:
         call_id: str = "",
         cseq_num: int = 1,
         remote_uri: str = "",
+        from_hdr: str = "",
+        to_hdr: str = "",
     ):
         self.phone = phone
         self.is_incoming = is_incoming
@@ -207,6 +212,15 @@ class TJA470SipCall:
         self.call_id = call_id or f"{os.urandom(16).hex()}@{phone.local_ip}"
         self.cseq_num = cseq_num
         self.remote_uri = remote_uri
+
+        if is_incoming:
+            self._from_hdr = from_hdr or f"<sip:unknown@{phone.host}>"
+            self._to_hdr = to_hdr or f"<sip:{phone.sip_id}@{phone.host}>"
+            if ";tag=" not in self._to_hdr:
+                self._to_hdr = f"{self._to_hdr};tag={self.local_tag}"
+        else:
+            self._from_hdr = f"<sip:{phone.sip_id}@{phone.host}>;tag={self.local_tag}"
+            self._to_hdr = f"<{remote_uri}>"
 
         self._state = CallState.RINGING if is_incoming else CallState.DIALING
         self._caller = "unknown"
@@ -324,7 +338,7 @@ class TJA470SipCall:
 
     async def answer(self) -> None:
         """Answer the incoming call."""
-        if self._state != CallState.RINGING:
+        if self._state == CallState.ENDED:
             return
 
         try:
@@ -345,8 +359,8 @@ class TJA470SipCall:
             response = (
                 f"SIP/2.0 200 OK\r\n"
                 f"Via: {self.phone._last_via_header}\r\n"
-                f"From: {self.remote_uri};tag={self.remote_tag}\r\n"
-                f"To: <sip:{self.phone.sip_id}@{self.phone.host}>;tag={self.local_tag}\r\n"
+                f"From: {self._from_hdr}\r\n"
+                f"To: {self._to_hdr}\r\n"
                 f"Call-ID: {self.call_id}\r\n"
                 f"CSeq: {self.cseq_num} INVITE\r\n"
                 f"Contact: <sip:{self.phone.sip_id}@{self.phone.local_ip}:{self.phone.sip_port}>\r\n"
@@ -373,8 +387,8 @@ class TJA470SipCall:
             bye = (
                 f"BYE {self.remote_uri} SIP/2.0\r\n"
                 f"Via: SIP/2.0/UDP {self.phone.local_ip}:{self.phone.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                f"From: <sip:{self.phone.sip_id}@{self.phone.host}>;tag={self.local_tag}\r\n"
-                f"To: {self.remote_uri};tag={self.remote_tag}\r\n"
+                f"From: {self._from_hdr}\r\n"
+                f"To: {self._to_hdr}\r\n"
                 f"Call-ID: {self.call_id}\r\n"
                 f"CSeq: {self.cseq_num} BYE\r\n"
                 f"Max-Forwards: 70\r\n"
@@ -388,16 +402,16 @@ class TJA470SipCall:
 
     async def deny(self) -> None:
         """Reject the call."""
-        if self._state != CallState.RINGING:
+        if self._state == CallState.ENDED:
             return
 
         try:
-            # Send 486 Busy Here
+            # Send 480 Temporarily Unavailable
             response = (
-                f"SIP/2.0 486 Busy Here\r\n"
+                f"SIP/2.0 480 Temporarily Unavailable\r\n"
                 f"Via: {self.phone._last_via_header}\r\n"
-                f"From: {self.remote_uri};tag={self.remote_tag}\r\n"
-                f"To: <sip:{self.phone.sip_id}@{self.phone.host}>;tag={self.local_tag}\r\n"
+                f"From: {self._from_hdr}\r\n"
+                f"To: {self._to_hdr}\r\n"
                 f"Call-ID: {self.call_id}\r\n"
                 f"CSeq: {self.cseq_num} INVITE\r\n"
                 f"Content-Length: 0\r\n\r\n"
@@ -543,6 +557,13 @@ class TJA470SipPhone:
 
         self._registration_task: Optional[asyncio.Task] = None
         self._last_via_header = ""
+        self._unregister_future: Optional[asyncio.Future[None]] = None
+        self._unregister_call_id = ""
+
+        # Preemptive authentication state
+        self._reg_call_id = f"{os.urandom(16).hex()}@{local_ip}"
+        self._reg_from_tag = os.urandom(8).hex()
+        self._cached_auth_challenge: Optional[Dict[str, str]] = None
 
     def register_incoming_call_callback(
         self, callback: Callable[[TJA470SipCall], Coroutine[Any, Any, None]]
@@ -574,12 +595,28 @@ class TJA470SipPhone:
         if self._sip_transport:
             self._sip_transport.sendto(data, addr)
 
+    def send_bye(self, call_id: str, from_hdr: str, to_hdr: str, remote_uri: str) -> None:
+        """Send a BYE request to terminate an active call leg (e.g. to clean up a stale call on startup)."""
+        self._cseq += 1
+        bye = (
+            f"BYE {remote_uri} SIP/2.0\r\n"
+            f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
+            f"From: {from_hdr}\r\n"
+            f"To: {to_hdr}\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {self._cseq} BYE\r\n"
+            f"Max-Forwards: 70\r\n"
+            f"Content-Length: 0\r\n\r\n"
+        )
+        self._send_packet(bye.encode("utf-8"), self._remote_addr)
+
     async def start(self) -> None:
         """Start the SIP client, bind socket, and register."""
         if self._sip_transport:
             raise TJA470SipError("SIP Phone is already started")
 
         loop = asyncio.get_running_loop()
+        self._loop = loop
         try:
             transport, _ = await loop.create_datagram_endpoint(
                 lambda: SipProtocol(self),
@@ -606,18 +643,38 @@ class TJA470SipPhone:
         # Send deregister REGISTER
         try:
             self._cseq += 1
+            self._unregister_call_id = self._reg_call_id
+            
+            auth_header = ""
+            if self._cached_auth_challenge:
+                auth_str = compute_digest_auth(
+                    self.sip_id,
+                    self.sip_password,
+                    "REGISTER",
+                    f"sip:{self.host}",
+                    self._cached_auth_challenge
+                )
+                auth_header = f"Authorization: {auth_str}\r\n"
+
             dereg = (
                 f"REGISTER sip:{self.host} SIP/2.0\r\n"
                 f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                f"From: <sip:{self.sip_id}@{self.host}>;tag={os.urandom(8).hex()}\r\n"
+                f"From: <sip:{self.sip_id}@{self.host}>;tag={self._reg_from_tag}\r\n"
                 f"To: <sip:{self.sip_id}@{self.host}>\r\n"
-                f"Call-ID: {os.urandom(16).hex()}@{self.local_ip}\r\n"
+                f"Call-ID: {self._reg_call_id}\r\n"
                 f"CSeq: {self._cseq} REGISTER\r\n"
-                f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
+                f"Contact: *\r\n"
+                f"{auth_header}"
                 f"Expires: 0\r\n"
                 f"Content-Length: 0\r\n\r\n"
             )
+            self._unregister_future = self._loop.create_future()
             self._send_packet(dereg.encode("utf-8"), self._remote_addr)
+            # Wait for unregistration confirmation or timeout
+            try:
+                await asyncio.wait_for(self._unregister_future, timeout=2.0)
+            except asyncio.TimeoutError:
+                _LOGGER.debug("Deregister timeout")
         except Exception as e:
             _LOGGER.debug("Deregister failed: %s", e)
 
@@ -637,14 +694,26 @@ class TJA470SipPhone:
         while True:
             try:
                 self._cseq += 1
+                auth_header = ""
+                if self._cached_auth_challenge:
+                    auth_str = compute_digest_auth(
+                        self.sip_id,
+                        self.sip_password,
+                        "REGISTER",
+                        f"sip:{self.host}",
+                        self._cached_auth_challenge
+                    )
+                    auth_header = f"Authorization: {auth_str}\r\n"
+
                 reg = (
                     f"REGISTER sip:{self.host} SIP/2.0\r\n"
                     f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                    f"From: <sip:{self.sip_id}@{self.host}>;tag={os.urandom(8).hex()}\r\n"
+                    f"From: <sip:{self.sip_id}@{self.host}>;tag={self._reg_from_tag}\r\n"
                     f"To: <sip:{self.sip_id}@{self.host}>\r\n"
-                    f"Call-ID: {os.urandom(16).hex()}@{self.local_ip}\r\n"
+                    f"Call-ID: {self._reg_call_id}\r\n"
                     f"CSeq: {self._cseq} REGISTER\r\n"
                     f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
+                    f"{auth_header}"
                     f"Expires: 120\r\n"
                     f"Content-Length: 0\r\n\r\n"
                 )
@@ -699,30 +768,15 @@ class TJA470SipPhone:
                     caller = matches.group(1)
 
                 if self._active_call:
-                    # Busy
-                    response = (
-                        f"SIP/2.0 486 Busy Here\r\n"
-                        f"Via: {self._last_via_header}\r\n"
-                        f"From: {from_hdr}\r\n"
-                        f"To: {msg.get_header('To')};tag={os.urandom(8).hex()}\r\n"
-                        f"Call-ID: {call_id}\r\n"
-                        f"CSeq: {cseq_num} INVITE\r\n"
-                        f"Content-Length: 0\r\n\r\n"
+                    _LOGGER.info(
+                        "Replacing existing active call %s (state %s) with new incoming call %s",
+                        self._active_call.call_id, self._active_call._state, call_id
                     )
-                    self._send_packet(response.encode("utf-8"), addr)
-                    return
-
-                # Send 180 Ringing
-                ringing = (
-                    f"SIP/2.0 180 Ringing\r\n"
-                    f"Via: {self._last_via_header}\r\n"
-                    f"From: {from_hdr}\r\n"
-                    f"To: {msg.get_header('To')};tag={os.urandom(8).hex()}\r\n"
-                    f"Call-ID: {call_id}\r\n"
-                    f"CSeq: {cseq_num} INVITE\r\n"
-                    f"Content-Length: 0\r\n\r\n"
-                )
-                self._send_packet(ringing.encode("utf-8"), addr)
+                    if self._active_call._rtp_transport:
+                        self._active_call._rtp_transport.close()
+                        self._active_call._rtp_transport = None
+                    self._active_call._state = CallState.ENDED
+                    self._active_call = None
 
                 # Parse SDP
                 sdp_info = parse_sdp(msg.body)
@@ -734,6 +788,8 @@ class TJA470SipPhone:
                     call_id=call_id,
                     cseq_num=cseq_num,
                     remote_uri=clean_uri(from_hdr),
+                    from_hdr=from_hdr,
+                    to_hdr=msg.get_header("To"),
                 )
                 call._caller = caller
                 call._state = CallState.RINGING
@@ -742,6 +798,19 @@ class TJA470SipPhone:
                 call.codec = sdp_info["codec"]
 
                 self._active_call = call
+
+                # Send 180 Ringing
+                ringing = (
+                    f"SIP/2.0 180 Ringing\r\n"
+                    f"Via: {self._last_via_header}\r\n"
+                    f"From: {call._from_hdr}\r\n"
+                    f"To: {call._to_hdr}\r\n"
+                    f"Call-ID: {call_id}\r\n"
+                    f"CSeq: {cseq_num} INVITE\r\n"
+                    f"Content-Length: 0\r\n\r\n"
+                )
+                self._send_packet(ringing.encode("utf-8"), addr)
+
                 if self._on_incoming_call_cb:
                     asyncio.create_task(self._on_incoming_call_cb(call))
 
@@ -792,6 +861,20 @@ class TJA470SipPhone:
                     self._send_packet(terminated.encode("utf-8"), addr)
                     await self._active_call._cleanup()
 
+            elif msg.method == "NOTIFY":
+                call_id = msg.get_header("Call-ID")
+                # Respond 200 OK
+                response = (
+                    f"SIP/2.0 200 OK\r\n"
+                    f"Via: {msg.get_header('Via')}\r\n"
+                    f"From: {msg.get_header('From')}\r\n"
+                    f"To: {msg.get_header('To')}\r\n"
+                    f"Call-ID: {call_id}\r\n"
+                    f"CSeq: {msg.get_header('CSeq')}\r\n"
+                    f"Content-Length: 0\r\n\r\n"
+                )
+                self._send_packet(response.encode("utf-8"), addr)
+
         # 2. Handle incoming responses (status codes)
         else:
             cseq_val = msg.get_header("CSeq")
@@ -801,10 +884,14 @@ class TJA470SipPhone:
             cseq_num = int(cseq_num_str)
 
             if cseq_method == "REGISTER":
+                is_unreg = (self._unregister_future is not None and 
+                            msg.get_header("Call-ID") == self._unregister_call_id)
+                
                 if msg.status_code == 401:
                     auth_hdr = msg.get_header("WWW-Authenticate")
                     if auth_hdr:
                         challenge = parse_www_authenticate(auth_hdr)
+                        self._cached_auth_challenge = challenge
                         auth_str = compute_digest_auth(
                             self.sip_id,
                             self.sip_password,
@@ -813,21 +900,43 @@ class TJA470SipPhone:
                             challenge
                         )
                         self._cseq += 1
-                        reg = (
-                            f"REGISTER sip:{self.host} SIP/2.0\r\n"
-                            f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                            f"From: <sip:{self.sip_id}@{self.host}>;tag={os.urandom(8).hex()}\r\n"
-                            f"To: <sip:{self.sip_id}@{self.host}>\r\n"
-                            f"Call-ID: {msg.get_header('Call-ID')}\r\n"
-                            f"CSeq: {self._cseq} REGISTER\r\n"
-                            f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
-                            f"Authorization: {auth_str}\r\n"
-                            f"Expires: 120\r\n"
-                            f"Content-Length: 0\r\n\r\n"
-                        )
+                        
+                        if is_unreg:
+                            # Send authenticated unregistration
+                            reg = (
+                                f"REGISTER sip:{self.host} SIP/2.0\r\n"
+                                f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
+                                f"From: {msg.get_header('From')}\r\n"
+                                f"To: {strip_tag(msg.get_header('To'))}\r\n"
+                                f"Call-ID: {self._unregister_call_id}\r\n"
+                                f"CSeq: {self._cseq} REGISTER\r\n"
+                                f"Contact: *\r\n"
+                                f"Authorization: {auth_str}\r\n"
+                                f"Expires: 0\r\n"
+                                f"Content-Length: 0\r\n\r\n"
+                            )
+                        else:
+                            # Send authenticated registration
+                            reg = (
+                                f"REGISTER sip:{self.host} SIP/2.0\r\n"
+                                f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
+                                f"From: {msg.get_header('From')}\r\n"
+                                f"To: {strip_tag(msg.get_header('To'))}\r\n"
+                                f"Call-ID: {msg.get_header('Call-ID')}\r\n"
+                                f"CSeq: {self._cseq} REGISTER\r\n"
+                                f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
+                                f"Authorization: {auth_str}\r\n"
+                                f"Expires: 120\r\n"
+                                f"Content-Length: 0\r\n\r\n"
+                            )
                         self._send_packet(reg.encode("utf-8"), addr)
                 elif msg.status_code == 200:
-                    self._set_status(PhoneStatus.REGISTERED)
+                    if is_unreg:
+                        if self._unregister_future and not self._unregister_future.done():
+                            self._unregister_future.set_result(None)
+                    else:
+                        self._set_status(PhoneStatus.REGISTERED)
+
 
             elif cseq_method == "INVITE":
                 if self._active_call and self._active_call.call_id == msg.get_header("Call-ID"):
@@ -835,6 +944,7 @@ class TJA470SipPhone:
                         # Extract remote tag
                         to_hdr = msg.get_header("To")
                         self._active_call.remote_tag = parse_tag(to_hdr)
+                        self._active_call._to_hdr = to_hdr
                         
                         # Use Contact header for remote Request-URI in subsequent requests (ACK, BYE)
                         contact_hdr = msg.get_header("Contact")
@@ -853,8 +963,8 @@ class TJA470SipPhone:
                         ack = (
                             f"ACK {self._active_call.remote_uri} SIP/2.0\r\n"
                             f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                            f"From: <sip:{self.sip_id}@{self.host}>;tag={self._active_call.local_tag}\r\n"
-                            f"To: {to_hdr}\r\n"
+                            f"From: {self._active_call._from_hdr}\r\n"
+                            f"To: {self._active_call._to_hdr}\r\n"
                             f"Call-ID: {self._active_call.call_id}\r\n"
                             f"CSeq: {cseq_num} ACK\r\n"
                             f"Max-Forwards: 70\r\n"
@@ -872,6 +982,7 @@ class TJA470SipPhone:
                         auth_hdr = msg.get_header("WWW-Authenticate") or msg.get_header("Proxy-Authenticate")
                         if auth_hdr:
                             challenge = parse_www_authenticate(auth_hdr)
+                            self._cached_auth_challenge = challenge
                             dst_uri = f"sip:{self._active_call.caller}@{self.host}"
                             auth_str = compute_digest_auth(
                                 self.sip_id,
@@ -894,11 +1005,13 @@ class TJA470SipPhone:
                                 f"a=rtpmap:0 PCMU/8000\r\n"
                             )
                             
+                            self._active_call._from_hdr = msg.get_header("From")
+                            self._active_call._to_hdr = strip_tag(msg.get_header("To"))
                             invite = (
                                 f"INVITE {dst_uri} SIP/2.0\r\n"
                                 f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-                                f"From: <sip:{self.sip_id}@{self.host}>;tag={self._active_call.local_tag}\r\n"
-                                f"To: <sip:{self._active_call.caller}@{self.host}>\r\n"
+                                f"From: {self._active_call._from_hdr}\r\n"
+                                f"To: {self._active_call._to_hdr}\r\n"
                                 f"Call-ID: {self._active_call.call_id}\r\n"
                                 f"CSeq: {self._active_call.cseq_num} INVITE\r\n"
                                 f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
@@ -953,15 +1066,27 @@ class TJA470SipPhone:
         self._cseq += 1
         call.cseq_num = self._cseq
 
+        auth_header = ""
+        if self._cached_auth_challenge:
+            auth_str = compute_digest_auth(
+                self.sip_id,
+                self.sip_password,
+                "INVITE",
+                f"sip:{number}@{self.host}",
+                self._cached_auth_challenge
+            )
+            auth_header = f"Authorization: {auth_str}\r\n"
+
         # Send INVITE
         invite = (
             f"INVITE sip:{number}@{self.host} SIP/2.0\r\n"
             f"Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{os.urandom(8).hex()}\r\n"
-            f"From: <sip:{self.sip_id}@{self.host}>;tag={call.local_tag}\r\n"
-            f"To: <sip:{number}@{self.host}>\r\n"
+            f"From: {call._from_hdr}\r\n"
+            f"To: {call._to_hdr}\r\n"
             f"Call-ID: {call.call_id}\r\n"
             f"CSeq: {call.cseq_num} INVITE\r\n"
             f"Contact: <sip:{self.sip_id}@{self.local_ip}:{self.sip_port}>\r\n"
+            f"{auth_header}"
             f"Max-Forwards: 70\r\n"
             f"Content-Type: application/sdp\r\n"
             f"Content-Length: {len(sdp)}\r\n\r\n"
@@ -981,6 +1106,15 @@ def parse_tag(header_val: str) -> str:
     return ""
 
 
+def strip_tag(header_val: str) -> str:
+    """Remove tag parameter from a SIP header value like To or From."""
+    if not header_val:
+        return ""
+    parts = header_val.split(";")
+    clean_parts = [p for p in parts if not p.strip().startswith("tag=")]
+    return ";".join(clean_parts)
+
+
 def clean_uri(header_val: str) -> str:
     """Extract URI from header value, removing angle brackets and parameters."""
     if not header_val:
@@ -993,3 +1127,5 @@ def clean_uri(header_val: str) -> str:
         uri = header_val.strip()
     # Remove parameters after semicolon in the URI
     return uri.split(";")[0].strip()
+
+

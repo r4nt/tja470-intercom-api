@@ -339,3 +339,91 @@ async def test_custom_phone_callbacks():
         
         await phone.stop()
 
+
+@pytest.mark.asyncio
+async def test_custom_phone_active_call_override():
+    loop = asyncio.get_running_loop()
+    mock_transport = MagicMock(spec=asyncio.DatagramTransport)
+    protocol_instance = None
+    
+    def mock_create_endpoint(protocol_factory, local_addr=None):
+        nonlocal protocol_instance
+        protocol_instance = protocol_factory()
+        return mock_transport, protocol_instance
+        
+    with patch.object(loop, "create_datagram_endpoint", side_effect=mock_create_endpoint):
+        phone = CustomSipPhone("192.168.42.2", "6008", "pass", "127.0.0.1", 5060)
+        await phone.start()
+        
+        # Simulate registration success
+        raw_reg_200 = (
+            b"SIP/2.0 200 OK\r\n"
+            b"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK12345\r\n"
+            b"From: <sip:6008@192.168.42.2>;tag=abc\r\n"
+            b"To: <sip:6008@192.168.42.2>;tag=def\r\n"
+            b"Call-ID: registration-call\r\n"
+            b"CSeq: 1 REGISTER\r\n"
+            b"Content-Length: 0\r\n\r\n"
+        )
+        protocol_instance.datagram_received(raw_reg_200, ("192.168.42.2", 5060))
+        await asyncio.sleep(0.01)
+        
+        # Simulate first incoming call INVITE
+        raw_invite_1 = (
+            b"INVITE sip:6008@127.0.0.1 SIP/2.0\r\n"
+            b"Via: SIP/2.0/UDP 192.168.42.2:5060;branch=z9hG4bK67890\r\n"
+            b"From: <sip:6001@192.168.42.2>;tag=uvw\r\n"
+            b"To: <sip:6008@127.0.0.1>\r\n"
+            b"Call-ID: call-id-456\r\n"
+            b"CSeq: 1 INVITE\r\n"
+            b"Content-Type: application/sdp\r\n"
+            b"Content-Length: 125\r\n\r\n"
+            b"v=0\r\n"
+            b"o=caller 0 0 IN IP4 192.168.42.2\r\n"
+            b"s=Session\r\n"
+            b"c=IN IP4 192.168.42.2\r\n"
+            b"t=0 0\r\n"
+            b"m=audio 10002 RTP/AVP 0\r\n"
+            b"a=rtpmap:0 PCMU/8000\r\n"
+        )
+        protocol_instance.datagram_received(raw_invite_1, ("192.168.42.2", 5060))
+        await asyncio.sleep(0.01)
+        
+        call1 = phone._active_call
+        assert call1 is not None
+        assert call1.call_id == "call-id-456"
+        assert call1.state == CallState.RINGING
+        
+        # Simulate second incoming call INVITE without hanging up the first one
+        raw_invite_2 = (
+            b"INVITE sip:6008@127.0.0.1 SIP/2.0\r\n"
+            b"Via: SIP/2.0/UDP 192.168.42.2:5060;branch=z9hG4bKabcde\r\n"
+            b"From: <sip:6002@192.168.42.2>;tag=xyz\r\n"
+            b"To: <sip:6008@127.0.0.1>\r\n"
+            b"Call-ID: call-id-789\r\n"
+            b"CSeq: 1 INVITE\r\n"
+            b"Content-Type: application/sdp\r\n"
+            b"Content-Length: 125\r\n\r\n"
+            b"v=0\r\n"
+            b"o=caller 0 0 IN IP4 192.168.42.2\r\n"
+            b"s=Session\r\n"
+            b"c=IN IP4 192.168.42.2\r\n"
+            b"t=0 0\r\n"
+            b"m=audio 10004 RTP/AVP 0\r\n"
+            b"a=rtpmap:0 PCMU/8000\r\n"
+        )
+        protocol_instance.datagram_received(raw_invite_2, ("192.168.42.2", 5060))
+        await asyncio.sleep(0.01)
+        
+        # Verify first call was terminated/ended and second call replaced it
+        assert call1.state == CallState.ENDED
+        call2 = phone._active_call
+        assert call2 is not None
+        assert call2.call_id == "call-id-789"
+        assert call2.state == CallState.RINGING
+        
+        await phone.stop()
+
+
+
+

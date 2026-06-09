@@ -168,7 +168,7 @@ async def main():
     await asyncio.sleep(10)
 
     print("⌛ 10 seconds elapsed. Hanging up call...")
-    if active_call and active_call._raw_call.RTPClients:
+    if active_call and hasattr(active_call, "_raw_call") and active_call._raw_call.RTPClients:
         print(f"RTP Packets received in pmin.log: {len(active_call._raw_call.RTPClients[0].pmin.log)}")
         print(f"RTP Packets sent in pmout.log: {len(active_call._raw_call.RTPClients[0].pmout.log)}")
 

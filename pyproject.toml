@@ -30,6 +30,7 @@ tja470 = "aiotja470_intercom.cli:main"
 test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0",
 ]
 
 [tool.setuptools.packages.find]

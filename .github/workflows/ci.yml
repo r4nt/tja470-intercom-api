@@ -26,9 +26,8 @@ jobs:
       - name: Run tests with coverage
         run: pytest -v --cov=aiotja470_intercom --cov-report=term-missing --cov-report=xml
 
-      - name: Upload coverage report
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+      - name: Coverage summary
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        uses: MishaKav/pytest-coverage-comment@main
         with:
-          files: coverage.xml
-          fail_ci_if_error: false
+          pytest-xml-coverage-path: coverage.xml

@@ -1,4 +1,5 @@
 import aiohttp
+import base64
 import json
 import logging
 from urllib.parse import quote
@@ -12,6 +13,15 @@ _LOGGER = logging.getLogger(__name__)
 
 # All doorphone events: current camera changes, incoming calls, call history.
 DOORPHONE_EVENTS_TOPIC = DOORPHONE_EVENT_TOPIC_PREFIX + "*"
+
+
+def basic_auth_header(username: str, password: str) -> str:
+    """Return the Authorization header value for HTTP Basic Auth.
+
+    Encoded as latin-1, like aiohttp.BasicAuth, which aiohttp deprecates.
+    """
+    credentials = f"{username}:{password}".encode("latin1")
+    return "Basic " + base64.b64encode(credentials).decode("ascii")
 
 class TJA470IntercomClient:
     """Client for the Hager TJA470 Intercom API.
@@ -36,7 +46,7 @@ class TJA470IntercomClient:
             runner: The HTTP runner implementation used to execute requests.
         """
         self.host = host
-        self._auth = aiohttp.BasicAuth(username, password)
+        self._authorization = basic_auth_header(username, password)
         self._runner = runner
         # The client's own SIP id, remembered from the last provisioning
         # response; used as the default door release id.
@@ -67,7 +77,7 @@ class TJA470IntercomClient:
         try:
             return await self._runner.request(method, url, json=json)
         except TJA470AuthError:
-            return await self._runner.request(method, url, auth=self._auth, json=json)
+            return await self._runner.request(method, url, authorization=self._authorization, json=json)
 
     async def get_manifest(self) -> Manifest:
         """Verify authentication and retrieve the API manifest.
@@ -343,7 +353,7 @@ class TJA470IntercomClient:
         except TJA470AuthError:
             # No valid session yet: log in with a regular request, then retry.
             await self.get_manifest()
-            ws = await self._runner.ws_connect(url, auth=self._auth)
+            ws = await self._runner.ws_connect(url, authorization=self._authorization)
 
         try:
             async for msg in ws:

@@ -34,14 +34,17 @@ class Runner(Protocol):
         self,
         method: str,
         url: str,
-        auth: Optional[aiohttp.BasicAuth] = None,
+        authorization: Optional[str] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str, bytes, None]:
-        """Execute the HTTP request and return the parsed JSON, text, or bytes."""
+        """Execute the HTTP request and return the parsed JSON, text, or bytes.
+
+        authorization is the value of the Authorization header to send, if any.
+        """
         ...
 
     async def ws_connect(
-        self, url: str, auth: Optional[aiohttp.BasicAuth] = None
+        self, url: str, authorization: Optional[str] = None
     ) -> aiohttp.ClientWebSocketResponse:
         """Open a WebSocket connection, sending the stored cookies."""
         ...
@@ -92,7 +95,7 @@ class AiohttpRunner(Runner):
         self,
         method: str,
         url: str,
-        auth: Optional[aiohttp.BasicAuth] = None,
+        authorization: Optional[str] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str, bytes, None]:
         session = await self._get_session()
@@ -109,8 +112,9 @@ class AiohttpRunner(Runner):
             _LOGGER.debug(f"Sending Cookies: {logged_cookies}")
 
         try:
+            headers = {"Authorization": authorization} if authorization else None
             async with session.request(
-                method, url, auth=auth, json=json, cookies=req_cookies
+                method, url, headers=headers, json=json, cookies=req_cookies
             ) as response:
                 for resp in (*response.history, response):
                     cookie_jar.update_cookies(resp.cookies, resp.url)
@@ -147,7 +151,7 @@ class AiohttpRunner(Runner):
             raise TJA470Error(f"An unexpected error occurred: {e}") from e
 
     async def ws_connect(
-        self, url: str, auth: Optional[aiohttp.BasicAuth] = None
+        self, url: str, authorization: Optional[str] = None
     ) -> aiohttp.ClientWebSocketResponse:
         session = await self._get_session()
 
@@ -158,13 +162,15 @@ class AiohttpRunner(Runner):
         http_url = ws_url.with_scheme("https" if ws_url.scheme == "wss" else "http")
         req_cookies = self._get_cookie_jar().filter_cookies(http_url)
         headers = {}
+        if authorization:
+            headers["Authorization"] = authorization
         if req_cookies:
             headers["Cookie"] = "; ".join(f"{k}={m.value}" for k, m in req_cookies.items())
             _LOGGER.debug(f"Sending Cookies: { {k: '********' for k in req_cookies.keys()} }")
 
         _LOGGER.debug(f"WebSocket connect: {url}")
         try:
-            return await session.ws_connect(ws_url, headers=headers, auth=auth)
+            return await session.ws_connect(ws_url, headers=headers)
         except aiohttp.WSServerHandshakeError as e:
             _LOGGER.debug(f"WebSocket handshake failed: {e.status}")
             if e.status in (401, 403):

@@ -23,7 +23,7 @@ class FakeDevice:
         self.received_cookies.append(dict(request.cookies))
         if request.cookies.get("SID") == SESSION_ID:
             return web.json_response({"ref": "TJA470"})
-        if request.headers.get("Authorization") == aiohttp.BasicAuth("user", "pass").encode():
+        if request.headers.get("Authorization") == "Basic dXNlcjpwYXNz":
             self.logins += 1
             response = web.json_response({"ref": "TJA470"})
             response.set_cookie("SID", SESSION_ID)

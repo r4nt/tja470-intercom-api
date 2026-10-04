@@ -17,10 +17,10 @@ class MockRunner:
         self,
         method: str,
         url: str,
-        auth: Optional[aiohttp.BasicAuth] = None,
+        authorization: Optional[str] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str, bytes, list, None]:
-        self.requests.append({"method": method, "url": url, "auth": auth, "json": json})
+        self.requests.append({"method": method, "url": url, "authorization": authorization, "json": json})
         if self.responses_queue:
             resp = self.responses_queue.pop(0)
         else:
@@ -393,3 +393,18 @@ async def test_get_provisioning_if_changed_remembers_sip_id(client, runner):
     runner.next_response = ""
     await client.open_door()
     assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/6014")
+
+def test_basic_auth_header():
+    from aiotja470_intercom.client import basic_auth_header
+    assert basic_auth_header("user", "pass") == "Basic dXNlcjpwYXNz"
+    # Encoded as latin-1, like the aiohttp.BasicAuth it replaces.
+    assert basic_auth_header("user", "pässword") == "Basic dXNlcjpw5HNzd29yZA=="
+
+@pytest.mark.asyncio
+async def test_retry_after_401_sends_authorization(client, runner):
+    from aiotja470_intercom.exceptions import TJA470AuthError
+    runner.responses_queue = [TJA470AuthError("no session"), {"fw": "2.7.3"}]
+    await client.get_manifest()
+
+    assert runner.requests[0]["authorization"] is None
+    assert runner.requests[1]["authorization"] == "Basic dGVzdHVzZXI6dGVzdHBhc3M="

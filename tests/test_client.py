@@ -259,3 +259,40 @@ def test_redact():
     
     assert _redact("just a string") == "just a string"
 
+
+@pytest.mark.asyncio
+async def test_open_door_defaults_to_own_sip_id(client, runner):
+    runner.next_response = {"sipId": 6014, "calledElements": []}
+    await client.get_provisioning("test-uuid")
+
+    runner.next_response = ""
+    await client.open_door()
+
+    assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/6014")
+
+@pytest.mark.asyncio
+async def test_open_door_without_provisioning_uses_1(client, runner):
+    runner.next_response = ""
+    await client.open_door()
+
+    assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/1")
+
+@pytest.mark.asyncio
+async def test_open_door_explicit_id_overrides_sip_id(client, runner):
+    runner.next_response = {"sipId": 6014, "calledElements": []}
+    await client.get_provisioning("test-uuid")
+
+    runner.next_response = ""
+    await client.open_door(door_id=7)
+
+    assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/7")
+
+@pytest.mark.asyncio
+async def test_open_door_at_position_defaults_to_own_sip_id(client, runner):
+    runner.next_response = {"sipId": 6014, "calledElements": []}
+    await client.get_provisioning("test-uuid")
+
+    runner.responses_queue = [{"order": 1}, ""]
+    await client.open_door_at_position("test-uuid", 1)
+
+    assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/6014")

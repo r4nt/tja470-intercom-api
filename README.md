@@ -84,7 +84,7 @@ async def main():
         print(f"Firmware: {manifest.fw}")
 
         # Execute commands
-        await client.open_door(door_id=1)
+        await client.open_door()
 
     finally:
         await runner.close()
@@ -128,7 +128,9 @@ for ext in prov.called_elements:
     print(f"Known device: {ext.name} (SIP: {ext.sip_id})")
 
 # 4. Opening the door
-await client.open_door(door_id=1)
+# Like the official app, this sends the client's own SIP id (remembered from
+# get_provisioning) as the door release ID; pass door_id to override it.
+await client.open_door()
 
 # 5. Switching camera feeds
 await client.switch_camera("your-uuid-string")

@@ -1,5 +1,5 @@
 import aiohttp
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .exceptions import TJA470ResponseError, TJA470AuthError
 from .models import FreeDevice, Manifest, ProvisioningInfo
@@ -30,6 +30,9 @@ class TJA470IntercomClient:
         self.host = host
         self._auth = aiohttp.BasicAuth(username, password)
         self._runner = runner
+        # The client's own SIP id, remembered from the last provisioning
+        # response; used as the default door release id.
+        self._sip_id: Optional[str] = None
 
     @property
     def base_url(self) -> str:
@@ -125,7 +128,10 @@ class TJA470IntercomClient:
         if not isinstance(response, dict):
             raise TJA470ResponseError("Expected a dictionary for provisioning info")
 
-        return ProvisioningInfo.from_dict(response)
+        info = ProvisioningInfo.from_dict(response)
+        if info.sip_info.sip_id:
+            self._sip_id = info.sip_info.sip_id
+        return info
 
     async def switch_camera(self, uid: str) -> int:
         """Switch the active camera feed to the next position.
@@ -173,7 +179,9 @@ class TJA470IntercomClient:
             f"Failed to switch to camera position {position} after {max_attempts} attempts"
         )
 
-    async def open_door_at_position(self, uid: str, position: int, door_id: int = 1, max_attempts: int = 10) -> None:
+    async def open_door_at_position(
+        self, uid: str, position: int, door_id: Optional[Union[int, str]] = None, max_attempts: int = 10
+    ) -> None:
         """Switch the camera feed to the target position first, and then open the door.
 
         This ensures the correct door is released since the Hager TJA-470 releases
@@ -182,7 +190,7 @@ class TJA470IntercomClient:
         Args:
             uid: The registered client UUID.
             position: The camera position index corresponding to the door.
-            door_id: The door release ID (default: 1).
+            door_id: The door release ID (default: the client's own SIP id, see open_door).
             max_attempts: Maximum number of camera switches to attempt.
 
         Raises:
@@ -191,11 +199,18 @@ class TJA470IntercomClient:
         await self.switch_to_camera_position(uid, position, max_attempts=max_attempts)
         await self.open_door(door_id)
 
-    async def open_door(self, door_id: int = 1) -> None:
+    async def open_door(self, door_id: Optional[Union[int, str]] = None) -> None:
         """Trigger the door release command for the currently active camera feed.
 
+        The official app sends its own SIP id as the door release ID, so that is
+        the default here. The device does not appear to validate the ID.
+
         Args:
-            door_id: The door release ID (default: 1).
+            door_id: The door release ID. Defaults to the client's own SIP id from
+                the last get_provisioning() call, or 1 if provisioning has not
+                been fetched yet.
         """
+        if door_id is None:
+            door_id = self._sip_id if self._sip_id is not None else 1
         url = f"{self.base_url}/runtime/command/doorrelease/{door_id}"
         await self._request("POST", url, json={})

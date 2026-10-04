@@ -188,12 +188,12 @@ async def run_command(args):
 
         if args.open_door:
             print("\n🚪 Opening the door...")
-            await client.open_door(door_id=1)
+            await client.open_door()
             print("Door opened successfully!")
 
         if args.open_door_at is not None:
             print(f"\n🚪 Opening the door at camera position {args.open_door_at}...")
-            await client.open_door_at_position(uuid, args.open_door_at, door_id=1)
+            await client.open_door_at_position(uuid, args.open_door_at)
             print("Door opened successfully!")
 
         if args.switch_camera:

@@ -73,10 +73,11 @@ Notes:
 - **Door release** releases the door of the currently selected outdoor
   station. The Elcom Access app sends its own SIP id as `{id}`
   (`doorrelease/6000`), so `{id}` is most likely meant to identify the
-  requesting client. The device does not validate it: `doorrelease/1`, which
-  matches no client, also opens the door. Whether the server enforces the
-  client's `doorReleaseAllowed` permission (by `{id}`, session or user) or
-  leaves that to the app is untested.
+  requesting client. The device does not validate it: every value tried so
+  far, including `1`, which matches no client, opens the door. This library
+  sends the client's own SIP id, like the app. Whether the server enforces the
+  client's `doorReleaseAllowed` permission (by session or user) or leaves that
+  to the app is untested.
 - **Commands succeed even when the bus link is broken**: `camera/switch`
   returns a new `order` and `doorrelease` returns `204` although nothing
   happens physically (see [Known failure mode](#known-failure-mode)). The

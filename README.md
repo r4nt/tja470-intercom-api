@@ -4,6 +4,8 @@ An asynchronous, stateless Python client for the Hager TJA470 Intercom API.
 
 This library was heavily designed to act as the underlying foundation for Home Assistant integrations. It relies purely on dependency injection for network requests, correctly manages raw session cookies over IP addresses, and provides an end-to-end command-line interface for local testing.
 
+For how the device's HTTP API, event bus, SIP and video behave, see [PROTOCOL.md](PROTOCOL.md).
+
 > ⚠️ **Disclaimer:** This is an unofficial library. It is **not** affiliated with, endorsed by, or supported by Hager. Use it at your own risk.
 
 ## Installation
@@ -94,6 +96,8 @@ if __name__ == "__main__":
 ### Session & Cookie Management
 For Home Assistant integrations, you do not want to spam the TJA-470 with `Basic Auth` headers on every request. 
 The client is hard-coded with a **cookie-first fallback loop**. It attempts the request utilizing the cached cookies first. If the intercom rejects it (e.g. cookie expired), it automatically catches the `401 Unauthorized`, re-authenticates using your credentials to get a fresh session cookie, and seamlessly retries the request!
+
+`AiohttpRunner` keeps the device's cookies in its own cookie jar, so this also works when you pass in a shared session (e.g. Home Assistant's) whose default jar would drop cookies from IP addresses. `get_cookies()` only returns the device's cookies.
 
 ```python
 # Extract all cookies to persist across reboots (e.g. in HA ConfigEntry.data)

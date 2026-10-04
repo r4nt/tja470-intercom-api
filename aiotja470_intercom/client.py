@@ -1,4 +1,5 @@
 import aiohttp
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Union
 
 from .exceptions import TJA470ResponseError, TJA470AuthError
@@ -128,10 +129,79 @@ class TJA470IntercomClient:
         if not isinstance(response, dict):
             raise TJA470ResponseError("Expected a dictionary for provisioning info")
 
-        info = ProvisioningInfo.from_dict(response)
+        return self._parse_provisioning(response)
+
+    async def get_provisioning_if_changed(self, uid: str, version: Optional[str]) -> Optional[ProvisioningInfo]:
+        """Retrieve the provisioning info only if it changed since the given version.
+
+        The device answers with 304 Not Modified when the configuration version is
+        unchanged, which saves transferring and parsing the full response.
+
+        Args:
+            uid: The registered client UUID.
+            version: The `version` of the last known provisioning info, or None to
+                always fetch it.
+
+        Returns:
+            Optional[ProvisioningInfo]: The new provisioning info, or None if it is
+            unchanged.
+
+        Raises:
+            TJA470ResponseError: If the server response structure is invalid.
+        """
+        url = f"{self.base_url}/runtime/provisioning"
+        payload = {"uid": uid}
+        if version is not None:
+            payload["version"] = version
+        response = await self._request("POST", url, json=payload)
+
+        if isinstance(response, dict):
+            return self._parse_provisioning(response)
+        if not response:
+            # 304 Not Modified has no body.
+            return None
+        raise TJA470ResponseError("Expected a dictionary for provisioning info")
+
+    def _parse_provisioning(self, data: Dict[str, Any]) -> ProvisioningInfo:
+        info = ProvisioningInfo.from_dict(data)
         if info.sip_info.sip_id:
             self._sip_id = info.sip_info.sip_id
         return info
+
+    async def get_software_version(self) -> str:
+        """Get the version of the doorphone software.
+
+        This differs from the firmware version in the manifest (`Manifest.fw`).
+
+        Returns:
+            str: The doorphone software version, e.g. "4.0.2".
+
+        Raises:
+            TJA470ResponseError: If the response is invalid.
+        """
+        url = f"{self.base_url}/runtime/platform/softwareversion"
+        response = await self._request("GET", url)
+        if isinstance(response, dict) and "softwareVersion" in response:
+            return str(response["softwareVersion"])
+        raise TJA470ResponseError("Expected a dict with 'softwareVersion' from get_software_version")
+
+    async def is_alive(self, serial_number: str) -> bool:
+        """Check that the device is reachable and has the given serial number.
+
+        Args:
+            serial_number: The expected serial number (see `Manifest.serial_number`).
+
+        Returns:
+            bool: True if the device reports that the serial number matches.
+
+        Raises:
+            TJA470ResponseError: If the response is invalid.
+        """
+        url = f"{self.base_url}/runtime/platform/isalive?serialNumber={quote(serial_number)}"
+        response = await self._request("GET", url)
+        if isinstance(response, dict) and "match" in response:
+            return bool(response["match"])
+        raise TJA470ResponseError("Expected a dict with 'match' from is_alive")
 
     async def switch_camera(self, uid: str) -> int:
         """Switch the active camera feed to the next position.

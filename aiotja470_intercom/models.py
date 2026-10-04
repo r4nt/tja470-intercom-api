@@ -11,6 +11,11 @@ class Manifest:
         """Get the firmware version from the manifest raw data."""
         return self.raw_data.get("fw")
 
+    @property
+    def serial_number(self) -> Optional[str]:
+        """Get the device serial number from the manifest raw data."""
+        return self.raw_data.get("sn")
+
 @dataclass
 class FreeDevice:
     """Representation of a free device."""
@@ -84,6 +89,7 @@ class ProvisioningInfo:
     door_release_allowed: bool
     called_elements: List[CalledElement] = field(default_factory=list)
     remote_access: Optional[RemoteAccessInfo] = None
+    version: Optional[str] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -113,5 +119,6 @@ class ProvisioningInfo:
             door_release_allowed=data.get("doorReleaseAllowed", False),
             called_elements=called_elements,
             remote_access=remote_access,
+            version=data.get("version"),
             raw_data=data
         )

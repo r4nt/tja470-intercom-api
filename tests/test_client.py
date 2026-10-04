@@ -331,3 +331,65 @@ async def test_open_door_at_position_defaults_to_own_sip_id(client, runner):
     await client.open_door_at_position("test-uuid", 1)
 
     assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/6014")
+
+@pytest.mark.asyncio
+async def test_get_software_version(client, runner):
+    runner.next_response = {"softwareVersion": "4.0.2"}
+    assert await client.get_software_version() == "4.0.2"
+    assert runner.requests[0]["method"] == "GET"
+    assert runner.requests[0]["url"].endswith("/runtime/platform/softwareversion")
+
+@pytest.mark.asyncio
+async def test_get_software_version_invalid_response(client, runner):
+    runner.next_response = {}
+    with pytest.raises(TJA470ResponseError):
+        await client.get_software_version()
+
+@pytest.mark.asyncio
+async def test_is_alive(client, runner):
+    runner.next_response = {"match": True}
+    assert await client.is_alive("SN123") is True
+    assert runner.requests[0]["url"].endswith("/runtime/platform/isalive?serialNumber=SN123")
+
+@pytest.mark.asyncio
+async def test_is_alive_mismatch(client, runner):
+    runner.next_response = {"match": False}
+    assert await client.is_alive("SN123") is False
+
+@pytest.mark.asyncio
+async def test_manifest_serial_number(client, runner):
+    runner.next_response = {"sn": "SN123", "fw": "2.7.3"}
+    manifest = await client.get_manifest()
+    assert manifest.serial_number == "SN123"
+
+@pytest.mark.asyncio
+async def test_get_provisioning_if_changed_returns_new_info(client, runner):
+    runner.next_response = {"sipId": 6014, "version": "v2", "calledElements": []}
+    info = await client.get_provisioning_if_changed("test-uuid", "v1")
+
+    assert info is not None
+    assert info.version == "v2"
+    assert runner.requests[0]["json"] == {"uid": "test-uuid", "version": "v1"}
+
+@pytest.mark.asyncio
+async def test_get_provisioning_if_changed_unchanged(client, runner):
+    # The runner returns an empty body for 304 Not Modified.
+    runner.next_response = b""
+    assert await client.get_provisioning_if_changed("test-uuid", "v1") is None
+
+@pytest.mark.asyncio
+async def test_get_provisioning_if_changed_without_version(client, runner):
+    runner.next_response = {"sipId": 6014, "version": "v1", "calledElements": []}
+    info = await client.get_provisioning_if_changed("test-uuid", None)
+
+    assert info is not None
+    assert runner.requests[0]["json"] == {"uid": "test-uuid"}
+
+@pytest.mark.asyncio
+async def test_get_provisioning_if_changed_remembers_sip_id(client, runner):
+    runner.next_response = {"sipId": 6014, "version": "v1", "calledElements": []}
+    await client.get_provisioning_if_changed("test-uuid", None)
+
+    runner.next_response = ""
+    await client.open_door()
+    assert runner.requests[-1]["url"].endswith("/runtime/command/doorrelease/6014")

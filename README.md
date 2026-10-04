@@ -138,6 +138,15 @@ await client.switch_camera("your-uuid-string")
 # Getting the current camera position (also turns the camera video on)
 position = await client.get_current_camera("your-uuid-string")
 
+# 7. Versions and health
+manifest = await client.get_manifest()
+firmware = manifest.fw                                # e.g. "2.7.3"
+software = await client.get_software_version()        # doorphone software, e.g. "4.0.2"
+alive = await client.is_alive(manifest.serial_number)
+
+# 8. Re-fetching provisioning only when it changed (None if unchanged)
+new_prov = await client.get_provisioning_if_changed("your-uuid-string", prov.version)
+
 # 6. Switching to a specific camera position and opening the door
 await client.open_door_at_position("your-uuid-string", position=0)
 ```

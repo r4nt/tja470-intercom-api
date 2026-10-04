@@ -55,7 +55,7 @@ Base URL: `http://<host>/API`.
 | GET | `/API/runtime/command/camera/current/{uid}` | | `{"order": n}`, the current camera position; also turns the camera on |
 | POST | `/API/runtime/command/doorrelease/{id}` | `{}` | `204` |
 | GET | `/API/runtime/platform/softwareversion` | | `{"softwareVersion": "4.0.2"}`, the doorphone software version |
-| GET | `/API/runtime/platform/isalive?serialNumber=<sn>` | | `{"match": true}` |
+| GET | `/API/runtime/platform/isalive?serialNumber=<sn>` | | `{"match": true}` if `<sn>` is the device's serial number (manifest `sn`), else `{"match": false}` |
 
 Notes:
 

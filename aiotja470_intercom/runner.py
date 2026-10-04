@@ -54,16 +54,31 @@ class Runner(Protocol):
 
 
 class AiohttpRunner(Runner):
-    """Runner implementation using aiohttp.ClientSession."""
+    """Runner implementation using aiohttp.ClientSession.
+
+    Device cookies are kept in a cookie jar owned by the runner rather than in
+    the session's jar. The device is usually addressed by IP address, and
+    aiohttp's default cookie jar drops cookies from IP hosts, so relying on a
+    caller-provided (e.g. shared) session would lose the session cookie and
+    force a new login on every request. Keeping the jar private also ensures
+    get_cookies() only returns the device's cookies.
+    """
 
     def __init__(self, session: Optional[aiohttp.ClientSession] = None) -> None:
         self._session = session
         self._close_session = False
+        self._cookie_jar: Optional[aiohttp.CookieJar] = None
+
+    def _get_cookie_jar(self) -> aiohttp.CookieJar:
+        # Created lazily because CookieJar requires a running event loop.
+        if self._cookie_jar is None:
+            self._cookie_jar = aiohttp.CookieJar(unsafe=True)
+        return self._cookie_jar
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None:
-            jar = aiohttp.CookieJar(unsafe=True)
-            self._session = aiohttp.ClientSession(cookie_jar=jar)
+            # Cookies are handled by the runner's own jar.
+            self._session = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
             self._close_session = True
         return self._session
 
@@ -81,13 +96,18 @@ class AiohttpRunner(Runner):
             _LOGGER.debug(f"Request JSON: {_redact(json)}")
 
         from yarl import URL
-        req_cookies = session.cookie_jar.filter_cookies(URL(url))
+        cookie_jar = self._get_cookie_jar()
+        req_cookies = cookie_jar.filter_cookies(URL(url))
         if req_cookies:
             logged_cookies = {k: "********" for k in req_cookies.keys()}
             _LOGGER.debug(f"Sending Cookies: {logged_cookies}")
 
         try:
-            async with session.request(method, url, auth=auth, json=json) as response:
+            async with session.request(
+                method, url, auth=auth, json=json, cookies=req_cookies
+            ) as response:
+                for resp in (*response.history, response):
+                    cookie_jar.update_cookies(resp.cookies, resp.url)
                 _LOGGER.debug(f"Response Status: {response.status}")
                 logged_headers = dict(response.headers)
                 if "Set-Cookie" in logged_headers:
@@ -121,23 +141,15 @@ class AiohttpRunner(Runner):
             raise TJA470Error(f"An unexpected error occurred: {e}") from e
 
     def get_cookies(self, url: str) -> Dict[str, str]:
-        if not self._session:
+        if self._cookie_jar is None:
             return {}
-        # We iterate over all cookies in the jar to ensure we don't miss any due to path/domain mismatches
-        cookies = {}
-        for cookie in self._session.cookie_jar:
-            cookies[cookie.key] = cookie.value
-        return cookies
+        # The jar only holds the device's cookies, so return all of them to
+        # avoid missing any due to path/domain mismatches.
+        return {cookie.key: cookie.value for cookie in self._cookie_jar}
 
     def set_cookies(self, url: str, cookies: Dict[str, str]) -> None:
-        if not self._session:
-            # We must instantiate the session first to have a cookie jar
-            jar = aiohttp.CookieJar(unsafe=True)
-            self._session = aiohttp.ClientSession(cookie_jar=jar)
-            self._close_session = True
-        
         from yarl import URL
-        self._session.cookie_jar.update_cookies(cookies, response_url=URL(url))
+        self._get_cookie_jar().update_cookies(cookies, response_url=URL(url))
 
     async def close(self) -> None:
         if self._session and self._close_session:

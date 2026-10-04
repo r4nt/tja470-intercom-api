@@ -135,6 +135,9 @@ await client.open_door()
 # 5. Switching camera feeds
 await client.switch_camera("your-uuid-string")
 
+# Getting the current camera position (also turns the camera video on)
+position = await client.get_current_camera("your-uuid-string")
+
 # 6. Switching to a specific camera position and opening the door
 await client.open_door_at_position("your-uuid-string", position=0)
 ```

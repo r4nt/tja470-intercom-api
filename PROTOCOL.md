@@ -52,7 +52,7 @@ Base URL: `http://<host>/API`.
 | POST | `/API/runtime/pairing/setuid` | slot id and client UID | pairs a UID with a slot |
 | POST | `/API/runtime/provisioning` | `{"uid": "<uid>"}`, optionally `"version": "<last version>"` | `200` with provisioning info, or `304` if `version` is unchanged |
 | POST | `/API/runtime/command/camera/switch/{uid}` | `{}` | `{"order": n}`, the new current camera position |
-| GET | `/API/runtime/command/camera/current/{uid}` | | `{"order": n}`, the current camera position |
+| GET | `/API/runtime/command/camera/current/{uid}` | | `{"order": n}`, the current camera position; also turns the camera on |
 | POST | `/API/runtime/command/doorrelease/{id}` | `{}` | `204` |
 | GET | `/API/runtime/platform/softwareversion` | | `{"softwareVersion": "4.0.2"}`, the doorphone software version |
 | GET | `/API/runtime/platform/isalive?serialNumber=<sn>` | | `{"match": true}` |
@@ -68,8 +68,12 @@ Notes:
   `version` that changes when the configuration changes.
 - **Camera position**: the device keeps one "current device" (camera
   position). `camera/switch` cycles to the next outdoor station; there is no
-  observed "switch to position n" call, so clients cycle until the wanted
-  `order` comes back. A switch takes about 1.1 s to answer.
+  observed "switch to position n" call. To reach a position, a client reads
+  the current one with `camera/current` and switches only while it is wrong.
+  A switch takes about 1.1 s to answer.
+- **Turning the camera on**: `GET camera/current/{uid}` activates the video of
+  the current outdoor station on the RTSP stream. Connecting to the RTSP
+  stream alone does not.
 - **Door release** releases the door of the currently selected outdoor
   station. The Elcom Access app sends its own SIP id as `{id}`
   (`doorrelease/6000`), so `{id}` is most likely meant to identify the
@@ -160,8 +164,8 @@ What the stream shows:
 | outdoor station video active | live camera picture | `b=AS:6594` |
 | switched, but no video arrives | uniform dark grey (every pixel luma 32), for at least 30 s | |
 
-The live picture appears after a switch, during a doorbell call, and when the
-Elcom Access app opens (see [Open questions](#open-questions)). When the
+The live picture appears after `GET camera/current`, after a switch and during
+a doorbell call. An RTSP client on its own only gets the placeholder. When the
 selected source changes, the app tears down and re-establishes the RTSP
 session.
 
@@ -179,8 +183,8 @@ App start (live view opens automatically):
 3. `POST provisioning` with the last `version` (`200` or `304`)
 4. `GET platform/isalive?serialNumber=...` (first try `401`, then with auth)
 5. WebSocket subscription to `com/hager/doorphone/runtime/rest/*`
-6. `currentDevice/UPDATED` arrives about 1.6 s after start; the app reconnects
-   RTSP and gets live video
+6. `currentDevice/UPDATED` arrives about 1.6 s after start (the camera was
+   turned on by step 1); the app reconnects RTSP and gets live video
 7. SIP `REGISTER`
 
 Switch camera: `POST camera/switch/{uid}` → `{"order": n}`, then
@@ -241,8 +245,6 @@ switch *(unverified)*.
 
 ## Open questions
 
-- What turns the camera on when the Elcom Access app starts without a switch:
-  `GET camera/current`, the event bus subscription, or the RTSP connection.
 - Whether `doorReleaseAllowed` is enforced by the server, and whether
   `{id}` in `doorrelease/{id}` plays any role in that.
 - The SIP `INVITE` and answer flow as used by the app (incoming SIP requests

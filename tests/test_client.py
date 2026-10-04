@@ -196,6 +196,18 @@ async def test_switch_to_camera_position_success(client, runner):
     
     assert pos == 1
     assert len(runner.requests) == 2
+    assert runner.requests[0]["method"] == "GET"
+    assert "camera/current/test-uuid" in runner.requests[0]["url"]
+    assert "camera/switch/test-uuid" in runner.requests[1]["url"]
+
+@pytest.mark.asyncio
+async def test_switch_to_camera_position_already_there(client, runner):
+    runner.responses_queue = [{"order": 1}]
+    pos = await client.switch_to_camera_position("test-uuid", 1)
+
+    assert pos == 1
+    assert len(runner.requests) == 1
+    assert "camera/current/test-uuid" in runner.requests[0]["url"]
 
 @pytest.mark.asyncio
 async def test_switch_to_camera_position_not_found(client, runner):
@@ -205,6 +217,7 @@ async def test_switch_to_camera_position_not_found(client, runner):
     
     assert "Target position 2 not found" in str(exc_info.value)
     assert len(runner.requests) == 3
+    assert "camera/current/test-uuid" in runner.requests[0]["url"]
 
 @pytest.mark.asyncio
 async def test_open_door_at_position(client, runner):
@@ -212,9 +225,31 @@ async def test_open_door_at_position(client, runner):
     await client.open_door_at_position("test-uuid", 1, door_id=1)
     
     assert len(runner.requests) == 3
-    assert "camera/switch/test-uuid" in runner.requests[0]["url"]
+    assert "camera/current/test-uuid" in runner.requests[0]["url"]
     assert "camera/switch/test-uuid" in runner.requests[1]["url"]
     assert "doorrelease/1" in runner.requests[2]["url"]
+
+@pytest.mark.asyncio
+async def test_open_door_at_current_position_skips_switch(client, runner):
+    runner.responses_queue = [{"order": 1}, ""]
+    await client.open_door_at_position("test-uuid", 1, door_id=1)
+
+    assert len(runner.requests) == 2
+    assert "camera/current/test-uuid" in runner.requests[0]["url"]
+    assert "doorrelease/1" in runner.requests[1]["url"]
+
+@pytest.mark.asyncio
+async def test_get_current_camera(client, runner):
+    runner.next_response = {"order": 1}
+    assert await client.get_current_camera("test-uuid") == 1
+    assert runner.requests[0]["method"] == "GET"
+    assert runner.requests[0]["url"].endswith("/runtime/command/camera/current/test-uuid")
+
+@pytest.mark.asyncio
+async def test_get_current_camera_invalid_response(client, runner):
+    runner.next_response = {}
+    with pytest.raises(TJA470ResponseError):
+        await client.get_current_camera("test-uuid")
 
 @pytest.mark.asyncio
 async def test_open_door(client, runner):

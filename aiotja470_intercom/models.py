@@ -122,3 +122,30 @@ class ProvisioningInfo:
             version=data.get("version"),
             raw_data=data
         )
+
+
+DOORPHONE_EVENT_TOPIC_PREFIX = "com/hager/doorphone/runtime/rest/"
+
+
+@dataclass
+class DoorphoneEvent:
+    """An event from the device's event bus."""
+    topic: str
+    value: Any = None
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        """The topic without the doorphone prefix, e.g. "INCOMINGCALL/1"."""
+        if self.topic.startswith(DOORPHONE_EVENT_TOPIC_PREFIX):
+            return self.topic[len(DOORPHONE_EVENT_TOPIC_PREFIX):]
+        return self.topic
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DoorphoneEvent":
+        properties = data.get("properties") or {}
+        return cls(
+            topic=str(data.get("topic", "")),
+            value=properties.get("value"),
+            properties=properties,
+        )

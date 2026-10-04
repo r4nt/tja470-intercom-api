@@ -147,6 +147,10 @@ alive = await client.is_alive(manifest.serial_number)
 # 8. Re-fetching provisioning only when it changed (None if unchanged)
 new_prov = await client.get_provisioning_if_changed("your-uuid-string", prov.version)
 
+# 9. Listening to the device's event bus (camera changes, incoming calls, call history)
+async for event in client.events():
+    print(event.name, event.value)  # e.g. "currentDevice/UPDATED" {"order": 1}, "INCOMINGCALL/1" None
+
 # 6. Switching to a specific camera position and opening the door
 await client.open_door_at_position("your-uuid-string", position=0)
 ```

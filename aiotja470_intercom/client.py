@@ -1,10 +1,17 @@
 import aiohttp
+import json
+import logging
 from urllib.parse import quote
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from .exceptions import TJA470ResponseError, TJA470AuthError
-from .models import FreeDevice, Manifest, ProvisioningInfo
+from .models import DOORPHONE_EVENT_TOPIC_PREFIX, DoorphoneEvent, FreeDevice, Manifest, ProvisioningInfo
 from .runner import Runner
+
+_LOGGER = logging.getLogger(__name__)
+
+# All doorphone events: current camera changes, incoming calls, call history.
+DOORPHONE_EVENTS_TOPIC = DOORPHONE_EVENT_TOPIC_PREFIX + "*"
 
 class TJA470IntercomClient:
     """Client for the Hager TJA470 Intercom API.
@@ -311,3 +318,44 @@ class TJA470IntercomClient:
             door_id = self._sip_id if self._sip_id is not None else 1
         url = f"{self.base_url}/runtime/command/doorrelease/{door_id}"
         await self._request("POST", url, json={})
+
+    async def events(self, topic: str = DOORPHONE_EVENTS_TOPIC) -> AsyncIterator[DoorphoneEvent]:
+        """Subscribe to the device's event bus and yield events as they arrive.
+
+        Events include `currentDevice/UPDATED` (camera position changed),
+        `INCOMINGCALL/{id}` and `callhistory/CREATED/{id}` / `callhistory/UPDATED/{id}`.
+        The iterator ends when the device closes the connection; reconnecting is
+        up to the caller.
+
+        Args:
+            topic: The event topic pattern to subscribe to.
+
+        Yields:
+            DoorphoneEvent: The parsed events.
+
+        Raises:
+            TJA470AuthError: If authentication fails.
+            TJA470ConnectionError: If the device cannot be reached.
+        """
+        url = f"ws://{self.host}/remote/events/?topics=[{topic}]"
+        try:
+            ws = await self._runner.ws_connect(url)
+        except TJA470AuthError:
+            # No valid session yet: log in with a regular request, then retry.
+            await self.get_manifest()
+            ws = await self._runner.ws_connect(url, auth=self._auth)
+
+        try:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                    except ValueError:
+                        _LOGGER.debug("Ignoring non-JSON event: %s", msg.data)
+                        continue
+                    if isinstance(data, dict):
+                        yield DoorphoneEvent.from_dict(data)
+                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
+        finally:
+            await ws.close()

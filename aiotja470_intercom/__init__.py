@@ -5,7 +5,7 @@ from .exceptions import (
     TJA470Error,
     TJA470ResponseError,
 )
-from .models import CalledElement, FreeDevice, Manifest, ProvisioningInfo, SipInfo, RemoteAccessInfo
+from .models import CalledElement, DoorphoneEvent, FreeDevice, Manifest, ProvisioningInfo, SipInfo, RemoteAccessInfo
 from .runner import AiohttpRunner, Runner
 from .sip import TJA470SipPhone, TJA470SipCall, TJA470SipError
 
@@ -21,6 +21,7 @@ __all__ = [
     "SipInfo",
     "CalledElement",
     "RemoteAccessInfo",
+    "DoorphoneEvent",
     "Runner",
     "AiohttpRunner",
     "TJA470SipPhone",

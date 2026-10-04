@@ -40,6 +40,12 @@ class Runner(Protocol):
         """Execute the HTTP request and return the parsed JSON, text, or bytes."""
         ...
 
+    async def ws_connect(
+        self, url: str, auth: Optional[aiohttp.BasicAuth] = None
+    ) -> aiohttp.ClientWebSocketResponse:
+        """Open a WebSocket connection, sending the stored cookies."""
+        ...
+
     def get_cookies(self, url: str) -> Dict[str, str]:
         """Get the cookies currently stored for a specific URL."""
         ...
@@ -138,6 +144,35 @@ class AiohttpRunner(Runner):
             # Re-raise our own exceptions so they aren't wrapped by the catch-all
             raise
         except Exception as e:
+            raise TJA470Error(f"An unexpected error occurred: {e}") from e
+
+    async def ws_connect(
+        self, url: str, auth: Optional[aiohttp.BasicAuth] = None
+    ) -> aiohttp.ClientWebSocketResponse:
+        session = await self._get_session()
+
+        from yarl import URL
+        # Keep the URL as given; the device expects e.g. unencoded brackets.
+        ws_url = URL(url, encoded=True)
+        # Cookies were stored for the device's http:// URLs.
+        http_url = ws_url.with_scheme("https" if ws_url.scheme == "wss" else "http")
+        req_cookies = self._get_cookie_jar().filter_cookies(http_url)
+        headers = {}
+        if req_cookies:
+            headers["Cookie"] = "; ".join(f"{k}={m.value}" for k, m in req_cookies.items())
+            _LOGGER.debug(f"Sending Cookies: { {k: '********' for k in req_cookies.keys()} }")
+
+        _LOGGER.debug(f"WebSocket connect: {url}")
+        try:
+            return await session.ws_connect(ws_url, headers=headers, auth=auth)
+        except aiohttp.WSServerHandshakeError as e:
+            _LOGGER.debug(f"WebSocket handshake failed: {e.status}")
+            if e.status in (401, 403):
+                raise TJA470AuthError("Authentication failed") from e
+            raise TJA470ResponseError(f"WebSocket handshake failed: HTTP {e.status}") from e
+        except aiohttp.ClientConnectorError as e:
+            raise TJA470ConnectionError(f"Connection failed: {e}") from e
+        except aiohttp.ClientError as e:
             raise TJA470Error(f"An unexpected error occurred: {e}") from e
 
     def get_cookies(self, url: str) -> Dict[str, str]:

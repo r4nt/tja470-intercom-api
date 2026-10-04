@@ -91,7 +91,10 @@ Notes:
 
 `ws://<host>/remote/events/?topics=[com/hager/doorphone/runtime/rest/*]`
 
-Authenticated with the session cookie. Each message is a JSON text frame:
+Authenticated with the session cookie; without a valid session the handshake
+gets `401`. The connection stays open and the server pushes events as they
+happen (`DoorphoneEvent`s from `TJA470IntercomClient.events()` in this
+library). Each message is a JSON text frame:
 
 ```json
 {
@@ -111,13 +114,27 @@ Observed topics (below `com/hager/doorphone/runtime/rest/`):
 
 | Topic | `value` | When |
 |---|---|---|
-| `currentDevice/UPDATED` | `{"order": n}` | camera position changed or (re)activated; about 1.1 s after `camera/switch`, also when a call comes in |
+| `currentDevice/UPDATED` | `{"order": n}` | camera position changed or (re)activated; about 1.1 s after `camera/switch` or `camera/current`, and about 1.1 s after `INCOMINGCALL` |
 | `INCOMINGCALL/{id}` | `null` | a doorbell call starts |
 | `callhistory/CREATED/{id}` | `null` | a call history entry is created (at ring) |
 | `callhistory/UPDATED/{id}` | `null` | the call history entry changes (e.g. call ended unanswered, about 45 s after the ring) |
 
 The Elcom Access app shows its ringing screen based on `INCOMINGCALL`, not on
 the SIP `INVITE`.
+
+Timing of a doorbell ring, measured once (event bus and SIP client on
+different hosts, both NTP-synchronised):
+
+| Offset | Source | What |
+|---|---|---|
+| 0 ms | event bus | `callhistory/CREATED/{id}` |
+| +46 ms | event bus | `INCOMINGCALL/{id}` |
+| +1.1 s | event bus | `currentDevice/UPDATED`: the live picture is available from here |
+| +1.6 s | SIP | `INVITE` from the outdoor station |
+
+So the event bus reports a ring about 1.6 s before SIP does, and snapshots
+taken before `currentDevice/UPDATED` show the idle placeholder. An event bus
+connection stayed open for over a minute without traffic other than pings.
 
 The web interface uses the same endpoint with other topics, e.g.
 `com/hager/osgi/fw/services/application/ApplicationEvent/*`,
@@ -133,7 +150,7 @@ The web interface uses the same endpoint with other topics, e.g.
   `200 OK`.
 - Doorbell calls arrive as `INVITE` from the outdoor station's SIP id
   (e.g. `sip:4000@<host>`, `sip:4001@<host>`; the ids are in
-  `calledElements`).
+  `calledElements`), about 1.6 s after the `INCOMINGCALL` event.
 - The remote-access path uses a separate SIP id (the client's id + 1).
 - The Elcom Access app answers an `INVITE` with `500 Call Error` when it was
   in the background, and with nothing at all when it is open, so calls cannot
